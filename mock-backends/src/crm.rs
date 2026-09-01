@@ -5,6 +5,5 @@ use ratewall_mock_backends::common::serve;
 
 #[tokio::main]
 async fn main() {
-    std::env::set_var("MOCK_SERVICE", "crm");
     serve("crm", 3000).await;
 }
