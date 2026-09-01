@@ -7,7 +7,6 @@
 use std::net::SocketAddr;
 
 use axum::middleware::from_fn;
-use axum::routing::get;
 use axum::Router;
 
 use ratewall_core::config::GatewayConfig;
@@ -26,8 +25,8 @@ async fn main() {
         .init();
 
     // ── Config: load, validate, refuse to start on bad config ──────────
-    let config_path = std::env::var("RATEWALL_CONFIG")
-        .unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_string());
+    let config_path =
+        std::env::var("RATEWALL_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_string());
     let config = match std::fs::read_to_string(&config_path) {
         Ok(text) => match GatewayConfig::from_toml(&text) {
             Ok(config) => {

@@ -43,7 +43,10 @@ pub enum ConfigError {
     /// A route prefix is not a clean single path segment.
     InvalidPrefix(String),
     /// A backend URL is not an absolute http(s) URL.
-    InvalidBackend { prefix: String, backend: String },
+    InvalidBackend {
+        prefix: String,
+        backend: String,
+    },
     /// The route table is empty — nothing to proxy.
     NoRoutes,
 }
@@ -56,7 +59,10 @@ impl std::fmt::Display for ConfigError {
                 write!(f, "invalid route prefix {p:?}: must be a single path segment (alphanumeric, no slashes)")
             }
             ConfigError::InvalidBackend { prefix, backend } => {
-                write!(f, "route {prefix:?}: backend {backend:?} is not an absolute http(s) URL")
+                write!(
+                    f,
+                    "route {prefix:?}: backend {backend:?} is not an absolute http(s) URL"
+                )
             }
             ConfigError::NoRoutes => {
                 write!(f, "no routes configured: add at least one [routes] entry")
@@ -70,8 +76,8 @@ impl std::error::Error for ConfigError {}
 impl GatewayConfig {
     /// Parse and validate a config from TOML text.
     pub fn from_toml(text: &str) -> Result<Self, ConfigError> {
-        let config: GatewayConfig = toml::from_str(text)
-            .map_err(|e| ConfigError::Parse(e.to_string()))?;
+        let config: GatewayConfig =
+            toml::from_str(text).map_err(|e| ConfigError::Parse(e.to_string()))?;
         config.validate()?;
         Ok(config)
     }
@@ -167,18 +173,10 @@ hrm = "http://hrm:3001"
 
     #[test]
     fn prefix_with_slash_is_rejected() {
-        let err = GatewayConfig::from_toml("[routes]\n\"a/b\" = \"http://x:1\"\n")
-            .unwrap_err();
-        assert!(matches!(err, ConfigError::Parse(_))); // TOML key syntax
-        // Programmatic path: prefix containing a slash fails validation.
-        let config = GatewayConfig {
-            port: 8080,
-            routes: BTreeMap::from([("a/b".to_string(), "http://x:1".to_string())]),
-        };
-        assert_eq!(
-            config.validate().unwrap_err(),
-            ConfigError::InvalidPrefix("a/b".to_string())
-        );
+        // A quoted TOML key containing a slash parses fine but must fail
+        // validation: prefixes are single path segments.
+        let err = GatewayConfig::from_toml("[routes]\n\"a/b\" = \"http://x:1\"\n").unwrap_err();
+        assert_eq!(err, ConfigError::InvalidPrefix("a/b".to_string()));
     }
 
     #[test]

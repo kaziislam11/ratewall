@@ -57,10 +57,7 @@ async fn healthz() -> StatusCode {
 }
 
 /// Catch-all: parse `/{prefix}[/{rest}]` and proxy to the matching backend.
-async fn proxy_fallback(
-    State(state): State<ProxyState>,
-    request: Request,
-) -> Response {
+async fn proxy_fallback(State(state): State<ProxyState>, request: Request) -> Response {
     let full_path = request.uri().path().to_string();
     let trimmed = full_path.trim_start_matches('/');
     let (prefix, rest) = match trimmed.split_once('/') {
@@ -108,8 +105,7 @@ async fn forward(state: &ProxyState, prefix: &str, suffix: &str, request: Reques
         Ok(bytes) => bytes,
         Err(err) => {
             tracing::warn!(prefix = %prefix, %err, "failed to buffer request body");
-            return (StatusCode::BAD_REQUEST, "failed to read request body")
-                .into_response();
+            return (StatusCode::BAD_REQUEST, "failed to read request body").into_response();
         }
     };
 
@@ -228,8 +224,14 @@ mod tests {
     async fn routes_round_trip_to_backend_with_path_and_query() {
         let backend_url = spawn_mock_backend().await;
         let routes = vec![
-            Route { prefix: "crm".into(), backend: backend_url.clone() },
-            Route { prefix: "hrm".into(), backend: backend_url.clone() },
+            Route {
+                prefix: "crm".into(),
+                backend: backend_url.clone(),
+            },
+            Route {
+                prefix: "hrm".into(),
+                backend: backend_url.clone(),
+            },
         ];
         let state = ProxyState::new(&routes).expect("state");
         let app = build_router(state).layer(from_fn(request_id_and_trace));
@@ -247,7 +249,9 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert!(response.headers().contains_key("x-request-id"));
         let body: Json = serde_json::from_slice(
-            &axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap(),
+            &axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .unwrap(),
         )
         .unwrap();
         assert_eq!(body["path"], "/customers/42");
@@ -260,7 +264,9 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body: Json = serde_json::from_slice(
-            &axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap(),
+            &axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .unwrap(),
         )
         .unwrap();
         assert_eq!(body["path"], "/");
@@ -268,13 +274,14 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_prefix_is_404() {
-        let routes = vec![Route { prefix: "crm".into(), backend: "http://127.0.0.1:1".into() }];
+        let routes = vec![Route {
+            prefix: "crm".into(),
+            backend: "http://127.0.0.1:1".into(),
+        }];
         let state = ProxyState::new(&routes).expect("state");
         let app = build_router(state);
         let response = app
-            .oneshot(
-                AxumRequest::get("/nope/thing").body(Body::empty()).unwrap(),
-            )
+            .oneshot(AxumRequest::get("/nope/thing").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -283,12 +290,17 @@ mod tests {
     #[tokio::test]
     async fn unreachable_backend_is_502() {
         // Port 1 is reserved and refuses connections.
-        let routes = vec![Route { prefix: "crm".into(), backend: "http://127.0.0.1:1".into() }];
+        let routes = vec![Route {
+            prefix: "crm".into(),
+            backend: "http://127.0.0.1:1".into(),
+        }];
         let state = ProxyState::new(&routes).expect("state");
         let app = build_router(state);
         let response = app
             .oneshot(
-                AxumRequest::get("/crm/anything").body(Body::empty()).unwrap(),
+                AxumRequest::get("/crm/anything")
+                    .body(Body::empty())
+                    .unwrap(),
             )
             .await
             .unwrap();
@@ -298,7 +310,10 @@ mod tests {
     #[tokio::test]
     async fn post_method_is_forwarded() {
         let backend_url = spawn_mock_backend().await;
-        let routes = vec![Route { prefix: "crm".into(), backend: backend_url }];
+        let routes = vec![Route {
+            prefix: "crm".into(),
+            backend: backend_url,
+        }];
         let state = ProxyState::new(&routes).expect("state");
         let app = build_router(state);
         let response = app
@@ -312,7 +327,9 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body: Json = serde_json::from_slice(
-            &axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap(),
+            &axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .unwrap(),
         )
         .unwrap();
         assert_eq!(body["method"], "POST");

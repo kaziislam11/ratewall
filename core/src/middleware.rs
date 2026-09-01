@@ -69,11 +69,7 @@ mod tests {
             .route("/", get(ok_handler))
             .layer(from_fn(request_id_and_trace));
         let response = app
-            .oneshot(
-                axum::http::Request::get("/")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(axum::http::Request::get("/").body(Body::empty()).unwrap())
             .await
             .unwrap();
         let id = response
