@@ -1,0 +1,22 @@
+[package]
+name = "ratewall-mock-backends"
+description = "Tiny axum stubs standing in for the CRM/HRM services in the demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mock-crm"
+path = "src/crm.rs"
+
+[[bin]]
+name = "mock-hrm"
+path = "src/hrm.rs"
+
+[dependencies]
+ratewall-core = { path = "../core" }
+axum = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

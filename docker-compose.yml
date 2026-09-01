@@ -1,0 +1,58 @@
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      RATEWALL_PORT: "8080"
+      RUST_LOG: "ratewall=info,tower_http=info"
+    depends_on:
+      crm:
+        condition: service_healthy
+      hrm:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  crm:
+    build:
+      context: .
+      dockerfile: mock-backends/Dockerfile
+    command: ["mock-crm"]
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/3000' || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  hrm:
+    build:
+      context: .
+      dockerfile: mock-backends/Dockerfile
+    command: ["mock-hrm"]
+    ports:
+      - "3001:3001"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/3001' || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10

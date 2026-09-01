@@ -1,0 +1,12 @@
+[package]
+name = "ratewall-core"
+description = "ratewall engine: router, middleware, auth, rate limiting, circuit breakers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Engine dependencies are added per phase. Phase 0 is a placeholder so the
+# lib/binary split (ADR-0002) exists from day one.
+
+[dev-dependencies]
