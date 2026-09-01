@@ -2,3 +2,5 @@
 Cargo.lock.orig
 *.swp
 .env
+.freebuff
+.github/repo_payload.json
