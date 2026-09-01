@@ -1,0 +1,8 @@
+# ratewall gateway configuration (Phase 1)
+# Validated at startup — the gateway refuses to start on bad config.
+
+port = 8080
+
+[routes]
+crm = "http://crm:3000"
+hrm = "http://hrm:3001"

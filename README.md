@@ -13,8 +13,33 @@ docker compose up --build -d
 curl -i http://localhost:8080/healthz   # → 200
 ```
 
-That's the whole demo for Phase 0: gateway + two mock backends (CRM/HRM) +
-Redis, no manual config.
+That's the whole demo: gateway + two mock backends (CRM/HRM) + Redis, no manual config.
+
+## Routing (Phase 1)
+
+The gateway proxies by path prefix, configured in `config.toml`:
+
+```toml
+port = 8080
+
+[routes]
+crm = "http://crm:3000"
+hrm = "http://hrm:3001"
+```
+
+```bash
+curl -i http://localhost:8080/crm/customers/42   # → proxied to the CRM backend
+curl -i http://localhost:8080/hrm/employees      # → proxied to the HRM backend
+curl -i http://localhost:8080/nope/x             # → 404 (unrouted prefix)
+```
+
+Every request gets an `x-request-id` (UUID, or pass your own via the
+`x-request-id` header) and is logged with route, status and latency — the
+shape the audit ledger will ingest later.
+
+**Config is validated at startup.** A missing file, malformed TOML, unknown
+keys, or an empty/non-http route table makes the gateway exit with an error
+instead of starting half-configured (see ADR-0003).
 
 ## Services
 
@@ -28,7 +53,7 @@ Redis, no manual config.
 ## Status
 
 - [x] **Phase 0** — skeleton: workspace, `/healthz`, compose, CI
-- [ ] Phase 1 — routing + config + request-id + tracing
+- [x] **Phase 1** — routing + config validation + request-id + tracing
 - [ ] Phase 2 — auth (Ed25519 JWT, fail-closed)
 - [ ] Phase 3 — rate limiting (Redis, fail-open)
 - [ ] Phase 4 — circuit breakers + `/readyz`

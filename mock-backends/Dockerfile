@@ -2,7 +2,7 @@
 # Context must be the repo root (docker-compose sets it) because core/ is a path dependency.
 # Note: the workspace manifest lists all members, so every member's manifest
 # must be present even when building a single package.
-FROM rust:1.83-slim AS builder
+FROM rust:1.88-slim AS builder
 WORKDIR /build
 
 COPY Cargo.toml ./

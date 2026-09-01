@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use axum::extract::Path;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::any;
 use axum::{Json, Router};
 use serde_json::json;
 
@@ -23,7 +23,7 @@ pub async fn serve(service: &'static str, port: u16) {
         .init();
 
     let app = Router::new()
-        .route("/*path", get(echo_path))
+        .route("/*path", any(echo_path))
         .fallback(echo_root);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));

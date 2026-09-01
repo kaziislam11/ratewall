@@ -6,8 +6,10 @@ services:
     ports:
       - "8080:8080"
     environment:
-      RATEWALL_PORT: "8080"
+      RATEWALL_CONFIG: "/etc/ratewall/config.toml"
       RUST_LOG: "ratewall=info,tower_http=info"
+    volumes:
+      - ./config.toml:/etc/ratewall/config.toml:ro
     depends_on:
       crm:
         condition: service_healthy
@@ -26,6 +28,8 @@ services:
       context: .
       dockerfile: mock-backends/Dockerfile
     command: ["mock-crm"]
+    environment:
+      MOCK_SERVICE: crm
     ports:
       - "3000:3000"
     healthcheck:
@@ -39,6 +43,8 @@ services:
       context: .
       dockerfile: mock-backends/Dockerfile
     command: ["mock-hrm"]
+    environment:
+      MOCK_SERVICE: hrm
     ports:
       - "3001:3001"
     healthcheck:

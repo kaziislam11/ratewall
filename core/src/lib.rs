@@ -4,8 +4,13 @@
 //! can drive the engine directly, without spinning up the binary
 //! (see docs/adr/0002-core-lib-gateway-bin-split.md).
 //!
-//! Phase 0 is intentionally a placeholder: routing, auth middleware, rate
-//! limiting and circuit breakers arrive in phases 1–4.
+//! Phase 1 adds: configuration with startup validation, the prefix route
+//! table, and the request-id + structured-tracing middleware. Auth, rate
+//! limiting and circuit breakers arrive in phases 2–4.
+
+pub mod config;
+pub mod middleware;
+pub mod router;
 
 /// Crate version, from the workspace manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
