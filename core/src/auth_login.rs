@@ -63,6 +63,9 @@ async fn login(State(state): State<LoginState>, Json(payload): Json<LoginRequest
     ) {
         Ok(token) => {
             tracing::info!(subject = %payload.username, "token issued");
+            // Same audit shape as the proxy path: the request line for a
+            // login names the subject that was authenticated.
+            crate::middleware::record_subject(&payload.username);
             (
                 StatusCode::OK,
                 Json(json!({

@@ -24,3 +24,5 @@ redis = { workspace = true }
 serde_json = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 tempfile = "3"
+# JSON log capture in the auth-flow tests (same crate the binary uses).
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }

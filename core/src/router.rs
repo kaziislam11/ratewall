@@ -174,7 +174,12 @@ async fn readyz(State(state): State<ProxyState>) -> Response {
 async fn proxy_fallback(State(state): State<ProxyState>, request: Request) -> Response {
     let subject = if let Some(auth) = &state.auth {
         match crate::middleware_auth::check_bearer(auth, &request) {
-            Ok(subject) => Some(subject),
+            Ok(subject) => {
+                // ADR-0001's audit shape: the per-request log line carries
+                // the verified subject, not just the route and status.
+                crate::middleware::record_subject(&subject);
+                Some(subject)
+            }
             Err(response) => return *response,
         }
     } else {

@@ -1,16 +1,32 @@
 //! Phase 1 middleware: per-request identifiers + structured tracing.
 //!
 //! Every request gets a UUID (`x-request-id`), propagated to the response and
-//! to a `tracing` span that also records route, status and latency. This is
-//! the exact shape the audit-ledger project will ingest later.
+//! to a `tracing` span that also records route, status and latency — and the
+//! authenticated subject once auth has verified one
+//! (`record_subject`), so each log line carries the full audit shape:
+//! request id, route, status, latency, subject.
 
 use axum::extract::Request;
 use axum::http::HeaderValue;
 use axum::middleware::Next;
 use axum::response::Response;
+use tracing::{field::Empty, Instrument};
 
 /// Header the gateway uses to expose/accept request ids.
 pub const REQUEST_ID_HEADER: &str = "x-request-id";
+
+/// Field on the request span that carries the authenticated subject. Empty
+/// until (and unless) auth verifies a token; handlers call [`record_subject`]
+/// to fill it in. Kept `pub` so middleware and handlers cannot drift apart
+/// on the field name.
+pub const SUBJECT_FIELD: &str = "subject";
+
+/// Attach the verified subject to the current request span, so it appears on
+/// the request's log line(s). A no-op outside a request span (e.g. a handler
+/// reached without the tracing middleware).
+pub fn record_subject(subject: &str) {
+    tracing::Span::current().record(SUBJECT_FIELD, subject);
+}
 
 /// Assign a request id, wrap the request in a tracing span, and record
 /// status + latency on the way out.
@@ -35,17 +51,22 @@ pub async fn request_id_and_trace(request: Request, next: Next) -> Response {
         request_id = %request_id,
         method = %method,
         path = %path,
+        // Declared literally, not as `SUBJECT_FIELD = Empty`: the macro
+        // stringifies identifiers, which would declare a field *named*
+        // "SUBJECT_FIELD" and `record_subject` would silently no-op.
+        subject = Empty,
     );
-    let _guard = span.enter();
 
     let started = std::time::Instant::now();
-    let mut response = next.run(request).await;
+    let mut response = async { next.run(request).await }
+        .instrument(span.clone())
+        .await;
     let latency_ms = started.elapsed().as_millis() as u64;
 
     if let Ok(value) = HeaderValue::from_str(&request_id) {
         response.headers_mut().insert(REQUEST_ID_HEADER, value);
     }
-    tracing::info!(status = %response.status(), latency_ms, "request complete");
+    tracing::info!(parent: &span, status = %response.status(), latency_ms, "request complete");
     response
 }
 
@@ -80,6 +101,13 @@ mod tests {
             .unwrap()
             .to_string();
         assert_eq!(id.len(), 36); // UUID
+    }
+
+    #[test]
+    fn subject_field_name_is_the_documented_constant() {
+        // The field name is part of the audit-log contract (consumers key on
+        // it), so pin it.
+        assert_eq!(SUBJECT_FIELD, "subject");
     }
 
     #[tokio::test]
