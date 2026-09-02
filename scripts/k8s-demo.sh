@@ -111,11 +111,15 @@ kubectl --namespace ratewall delete pod "$POD" --wait=false >/dev/null
 
 wait "$LOAD_PID"
 TOTAL="$(grep -c '^' "$LOAD_OUT")"
-NON_OK="$(grep -vc '^200$' "$LOAD_OUT" || true)"
-echo "load: $TOTAL requests, $((TOTAL - NON_OK)) ok, $NON_OK non-ok"
+# A steady-state 429 is the demo limiter doing its job (the load loop runs
+# for a while at ~4 rps against a 100 req/min cap), not a dropped request.
+# Only anything other than 200/429 means traffic actually failed.
+LIMITED="$(grep -c '^429$' "$LOAD_OUT" || true)"
+NON_OK="$(grep -vc -e '^200$' -e '^429$' "$LOAD_OUT" || true)"
+echo "load: $TOTAL requests, $((TOTAL - NON_OK - LIMITED)) ok, $LIMITED rate-limited (limiter working), $NON_OK dropped"
 if [ "$NON_OK" != "0" ]; then
-  echo "non-200 statuses seen:" >&2
-  grep -v '^200$' "$LOAD_OUT" | sort | uniq -c | sort -rn | head >&2
+  echo "dropped-request statuses seen:" >&2
+  grep -v -e '^200$' -e '^429$' "$LOAD_OUT" | sort | uniq -c | sort -rn | head >&2
   fail "requests failed while a gateway pod was killed — traffic did not survive"
 fi
 [ "$TOTAL" -ge 50 ] || fail "suspiciously few requests ($TOTAL) — load loop may have stalled"
