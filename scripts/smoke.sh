@@ -50,6 +50,13 @@ BODY=$(curl -s -H "Authorization: Bearer $TOKEN" "$BASE/hrm/employees/7")
 echo "$BODY" | grep -q '"service":"hrm"' || fail "hrm body missing service field: $BODY"
 echo "   ok"
 
+echo "── metrics endpoint (Prometheus format)"
+[ "$(status "$BASE/metrics")" = "200" ] || fail "/metrics"
+METRICS=$(curl -s "$BASE/metrics")
+echo "$METRICS" | grep -q '^# HELP ratewall_requests_total' || fail "metrics missing HELP header"
+echo "$METRICS" | grep -q 'ratewall_breaker_state{prefix="crm"}' || fail "metrics missing breaker gauge"
+echo "   ok"
+
 echo "── unknown prefix and edge cases"
 [ "$(status -H "Authorization: Bearer $TOKEN" "$BASE/nope/thing")" = "404" ] \
   || fail "unknown prefix must be 404"

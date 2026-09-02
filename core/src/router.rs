@@ -35,6 +35,9 @@ pub struct ProxyState {
     breakers: Option<Arc<Breakers>>,
     /// Request timeout for backend calls, from `[breaker].timeout_secs`.
     backend_timeout: std::time::Duration,
+    /// Prometheus registry (Phase 5). Counts/latencies/rejections per
+    /// route prefix; labels come from the validated table only.
+    metrics: Option<crate::metrics::Metrics>,
 }
 
 impl ProxyState {
@@ -53,6 +56,7 @@ impl ProxyState {
             limiter: None,
             breakers: None,
             backend_timeout: std::time::Duration::from_secs(30),
+            metrics: None,
         })
     }
 
@@ -77,6 +81,12 @@ impl ProxyState {
         self
     }
 
+    /// Enable the Prometheus registry (Phase 5).
+    pub fn with_metrics(mut self, metrics: crate::metrics::Metrics) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
     pub fn backend_for(&self, prefix: &str) -> Option<&str> {
         self.backends.get(prefix).map(String::as_str)
     }
@@ -91,12 +101,37 @@ pub fn build_router(state: ProxyState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .route("/metrics", get(metrics_endpoint))
         .fallback(proxy_fallback)
         .with_state(state)
 }
 
 async fn healthz() -> StatusCode {
     StatusCode::OK
+}
+
+/// Prometheus scrape endpoint, in the text exposition format.
+/// Unauthenticated by design (see the doc on `/healthz`): orchestrators and
+/// scrapers must not need a token. Bind the port to an internal interface
+/// or wall it off at the ingress if that's wrong for your network.
+async fn metrics_endpoint(State(state): State<ProxyState>) -> Response {
+    // Breaker gauges are published at scrape time from breaker state —
+    // the breaker stays the single source of truth.
+    if let (Some(metrics), Some(breakers)) = (&state.metrics, &state.breakers) {
+        for (prefix, breaker_state) in breakers.states() {
+            metrics.set_breaker_state(&prefix, breaker_state);
+        }
+    }
+    let body = state.metrics.map(|m| m.render()).unwrap_or_default();
+    (
+        StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response()
 }
 
 /// Readiness: real component health, not "process is alive". A gateway is
@@ -148,6 +183,19 @@ async fn proxy_fallback(State(state): State<ProxyState>, request: Request) -> Re
     if let Some(limiter) = &state.limiter {
         let key = limit_key(subject.as_deref(), "unkeyed");
         if let Decision::Limit(retry_after) = limiter.decide(&key).await {
+            if let Some(metrics) = &state.metrics {
+                // The prefix isn't parsed yet at this point; derive it from
+                // the path the same way the fallback does, so the rejection
+                // lands on the route's own counters.
+                let prefix = request
+                    .uri()
+                    .path()
+                    .trim_start_matches('/')
+                    .split_once('/')
+                    .map(|(p, _)| p)
+                    .unwrap_or("");
+                metrics.inc_rate_limited(prefix);
+            }
             return (
                 StatusCode::TOO_MANY_REQUESTS,
                 [("retry-after", retry_after.to_string())],
@@ -184,6 +232,9 @@ async fn forward(state: &ProxyState, prefix: &str, suffix: &str, request: Reques
     if let Some(breaker) = breaker {
         if breaker.try_admit() == Admit::ShortCircuit {
             tracing::warn!(prefix = %prefix, "circuit open: failing fast");
+            if let Some(metrics) = &state.metrics {
+                metrics.inc_circuit_open(prefix);
+            }
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 [("retry-after", "5".to_string())],
@@ -224,6 +275,10 @@ async fn forward(state: &ProxyState, prefix: &str, suffix: &str, request: Reques
         }
     };
 
+    // Metrics: one timer covers the whole proxied attempt — transport
+    // failures, breaker short-circuits and backend responses all land in
+    // the same per-prefix latency family they belong to.
+    let timer = state.metrics.as_ref().map(|m| m.start_request(prefix));
     let started = std::time::Instant::now();
     let response = match out.body(body_bytes).send().await {
         Ok(response) => response,
@@ -233,6 +288,9 @@ async fn forward(state: &ProxyState, prefix: &str, suffix: &str, request: Reques
             tracing::warn!(prefix = %prefix, target = %target, %err, "backend request failed");
             if let Some(breaker) = breaker {
                 breaker.record(false);
+            }
+            if let Some(timer) = timer {
+                timer.finish(Some("5xx"));
             }
             return (
                 StatusCode::BAD_GATEWAY,
@@ -264,6 +322,9 @@ async fn forward(state: &ProxyState, prefix: &str, suffix: &str, request: Reques
         }
     }
     let payload = response.bytes().await.unwrap_or_default();
+    if let Some(timer) = timer {
+        timer.finish(Some(status_class(axum_status)));
+    }
     tracing::info!(
         prefix = %prefix,
         target = %target,
@@ -275,6 +336,12 @@ async fn forward(state: &ProxyState, prefix: &str, suffix: &str, request: Reques
         tracing::error!(%err, "failed to build upstream response");
         (StatusCode::BAD_GATEWAY, "response build failed").into_response()
     })
+}
+
+/// Status *class* for metric labels: `2xx`..`5xx`, not the code — keeps
+/// label cardinality fixed regardless of how many codes backends invent.
+fn status_class(status: StatusCode) -> String {
+    format!("{}xx", status.as_u16() / 100)
 }
 
 /// RFC 7230 hop-by-hop headers must not be forwarded by a proxy.

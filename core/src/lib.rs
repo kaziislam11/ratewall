@@ -14,6 +14,7 @@ pub mod auth;
 pub mod auth_login;
 pub mod circuit;
 pub mod config;
+pub mod metrics;
 pub mod middleware;
 pub mod middleware_auth;
 pub mod ratelimit;

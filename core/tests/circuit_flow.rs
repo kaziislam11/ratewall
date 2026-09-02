@@ -21,6 +21,7 @@ use axum::http::{Request, StatusCode};
 use axum::response::IntoResponse;
 use ratewall_core::circuit::{BreakerConfig, Breakers};
 use ratewall_core::config::Route;
+use ratewall_core::metrics::Metrics;
 use ratewall_core::router::{build_router, ProxyState};
 use tower::ServiceExt;
 
@@ -103,7 +104,8 @@ async fn build_app(
     let breakers = Breakers::new(&routes, &breaker);
     let state = ProxyState::new(&routes)
         .expect("state")
-        .with_breakers(breakers, timeout.as_secs().max(1));
+        .with_breakers(breakers, timeout.as_secs().max(1))
+        .with_metrics(Metrics::new());
     build_router(state)
 }
 

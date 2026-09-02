@@ -19,6 +19,7 @@ use ratewall_core::auth;
 use ratewall_core::auth_login::{self, LoginState};
 use ratewall_core::circuit::Breakers;
 use ratewall_core::config::GatewayConfig;
+use ratewall_core::metrics::Metrics;
 use ratewall_core::middleware::request_id_and_trace;
 use ratewall_core::middleware_auth::AuthState;
 use ratewall_core::ratelimit::RateLimiter;
@@ -185,11 +186,14 @@ async fn main() {
         timeout_secs = config.breaker.timeout_secs,
         "circuit breakers enabled (one per backend)"
     );
+    let metrics = Metrics::new();
     let state = ProxyState::new(&routes)
         .expect("failed to build proxy state")
         .with_auth(auth_state)
         .with_limiter(limiter.expect("limiter built above"))
-        .with_breakers(breakers, config.breaker.timeout_secs);
+        .with_breakers(breakers, config.breaker.timeout_secs)
+        .with_metrics(metrics);
+    tracing::info!("/metrics enabled (Prometheus text format)");
 
     let mut app = build_router(state);
     if let Some(login) = login_state {

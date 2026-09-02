@@ -205,10 +205,6 @@ limited too — it becomes a brute-force target and needs the limiter
 wired in front of it. (Proxied routes *are* rate-limited — see
 [ADR-0005](docs/adr/0005-rate-limiting-fail-open.md).)
 
-- **No metrics endpoint.** `/healthz` and `/readyz` exist (`/readyz` reports
-  real component health — backend breaker state and Redis PING — not just
-  "process is alive", see [ADR-0006](docs/adr/0006-circuit-breakers-and-readyz.md));
-  `/metrics` (Prometheus format) doesn't yet.
 - **Not battle-tested as a security boundary.** This is a young project.
   Do not put it on the public internet in front of anything you care about
   and walk away.
@@ -276,6 +272,10 @@ docker compose logs -f gateway
 # Check what the gateway actually thinks of its components
 # (breaker state per backend + Redis PING; 503 body names the sick one)
 curl -i http://localhost:8080/readyz
+
+# Scrape Prometheus metrics: per-route request counts, latency
+# histograms, 429s, circuit-open 503s, live breaker state
+curl http://localhost:8080/metrics
 
 # Chaos: kill Redis mid-load — traffic keeps flowing (fail-open),
 # enforcement resumes when it comes back. Gateway never restarts.
@@ -394,15 +394,19 @@ Shipped:
   doesn't degrade HRM traffic; half-open probes for self-healing;
   `/readyz` reflecting real backend and Redis health. Kill-a-backend
   chaos (`just chaos-backend`) runs in CI on every push.
+- **Metrics** — `/metrics` in the Prometheus text format: request counts
+  and latency histograms per route, status-class responses, rate-limit
+  rejections, and live breaker state. Zero dependencies — the registry is
+  hand-rolled because two counters and a histogram don't justify a client
+  library.
 - **Testing at the edges** — smoke + both chaos scripts asserted on
   every push in CI, not just on demand.
+- **Load testing** — honest, environment-labeled p99 latency numbers (see
+  the Numbers section).
 
 In rough order, each a self-contained change:
 
-1. **Metrics** — Prometheus endpoint: request counts, latency histograms
-   per route, rate-limit rejections, breaker state.
-2. **Load testing** — honest, environment-labeled p99 latency numbers.
-3. **Kubernetes** — kind manifests with readiness probes wired to real
+1. **Kubernetes** — kind manifests with readiness probes wired to real
    health, plus a scripted kill-a-pod-under-load demo.
 
 The audit-ledger integration is deliberately absent from this list. The
