@@ -417,6 +417,7 @@ k8s/                kind manifests: gateway ×3, Redis, mock backends, probes
 scripts/            smoke, chaos, load, and kind demo scripts (see justfile)
 docs/adr/           architecture decision records — the "why" behind the constraints
 docs/notes/         notes worth keeping: the project retrospective lives here
+CHANGELOG.md        notable changes per version, Keep a Changelog format
 config.toml         demo configuration, mounted into the gateway container
 ```
 
