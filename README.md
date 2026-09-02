@@ -140,7 +140,8 @@ On first boot the gateway generates an Ed25519 keypair, stores it on the
 restart — so issued tokens survive restarts and image rebuilds.
 
 ```bash
-# 1. Mint a token (demo credentials, documented on purpose):
+# 1. Mint a token (demo credentials, documented on purpose).
+#    Tokens live 15 minutes — after that, log in again:
 TOKEN=$(curl -s -X POST -H 'content-type: application/json' \
   -d '{"username":"demo","password":"demo-password"}' \
   http://localhost:8080/auth/login | sed 's/.*"token":"\([^"]*\)".*/\1/')
@@ -151,11 +152,22 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/crm/customers/42
 ```
 
 Tokens are compact JWS with `alg: EdDSA` (RFC 8037), claims `sub`, `iss`,
-`iat`, `exp`, and a 15-minute TTL (configurable via `[auth] token_ttl_secs`).
-Verification is **fail-closed**: any error — malformed header, wrong
-algorithm (including the classic `alg: none` attack), bad signature,
-expired, wrong issuer — is a 401. Rejection responses don't tell the caller
-*which* failure occurred; the detail goes to the gateway log instead.
+`iat`, `exp`, and a 15-minute lifetime (configurable via
+`[auth] token_ttl_secs`). Verification is **fail-closed**: any error —
+malformed header, wrong algorithm (including the classic `alg: none`
+attack), bad signature, expired, wrong issuer — is a 401.
+
+Every 401 body is deliberately identical (`missing or malformed bearer
+token` for a bad/absent header, `invalid token` for everything else) —
+the gateway never tells an unauthenticated caller *why* it said no. The
+specific reason (`signature verification failed`, `token expired`, …) goes
+to the gateway log on the same line as the request id, so if your own
+token gets rejected, grab the `x-request-id` from the response and check
+`docker compose logs gateway`:
+
+```
+request{request_id=… method=GET path=/crm/x}: request rejected by auth err=token expired
+```
 
 To trust an external identity provider instead (Supabase et al.), set the
 `[auth]` section with `issuer` + `issuer_public_key_pem` (an Ed25519 public
@@ -172,6 +184,13 @@ issuer_public_key_pem = "/keys/idp-public.pem"
 This is a demo issuer, not an identity provider. The demo credential is
 published here on purpose — the point is that `docker compose up` works
 with zero setup. Don't use the demo credentials anywhere real.
+
+Also worth knowing: `/auth/login` is **unthrottled** today. That's fine
+while the credential is the published demo pair, but the moment a real
+credential store sits behind it — or an external issuer's endpoints are
+reachable through a rate-limited route without the login route being
+limited too — it becomes a brute-force target and needs the Phase 3
+limiter wired in front of it.
 
 - **No rate limiting.** Redis is in the compose stack already because the
   limiter will need it, but nothing reads from it yet.

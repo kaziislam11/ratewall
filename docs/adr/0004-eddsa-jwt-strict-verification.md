@@ -52,3 +52,12 @@ Phase 2 adds authentication. Two decisions had to be made together:
 - The demo credential is public knowledge by design. Operators in
   external-issuer mode get their real identity story from their IdP; the
   demo mode must never face the internet.
+- `/auth/login` is unthrottled. Today that costs nothing: the only
+  credential is the published demo pair, so brute-forcing buys an
+  attacker nothing. It becomes a real problem at the moment either (a) a
+  real credential store replaces the hardcoded check — login must then
+  sit behind the Phase 3 rate limiter or it is an online password
+  oracle — or (b) login is exposed on a network where unauthenticated
+  request volume itself is the threat. Wire the limiter in front of this
+  route as part of whichever change brings real credentials; do not
+  ship real credentials without it.
