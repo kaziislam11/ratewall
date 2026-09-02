@@ -42,6 +42,10 @@ smoke:
 chaos-backend:
     bash scripts/chaos-backend.sh
 
+# Load test: regenerate the latency numbers (see bench/baseline.md)
+loadtest:
+    bash scripts/load.sh
+
 # Install the pre-push hook (fmt + clippy gate) for this clone
 install-hooks:
     git config core.hooksPath scripts/hooks

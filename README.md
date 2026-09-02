@@ -439,7 +439,8 @@ everything co-located" numbers: the *relative* costs (proxy overhead vs
 direct, limiter vs no limiter) are the honest signal, the absolute
 milliseconds are not.
 
-To reproduce: `docker compose up -d --wait`, raise `limit` in
-`config.toml`, `docker compose restart gateway`, then run `oha` however you
-like. If your numbers differ, yours are the ones that matter for your
-hardware.
+To reproduce: `just loadtest` (or `bash scripts/load.sh`) — it raises the
+rate limit for the run, restores it afterwards, and prints the table; the
+committed baseline lives in
+[bench/baseline.md](bench/baseline.md). If your numbers differ, yours are
+the ones that matter for your hardware.
