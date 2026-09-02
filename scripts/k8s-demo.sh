@@ -35,6 +35,11 @@ docker build -f mock-backends/Dockerfile -t ratewall-mocks:latest .
 "$KIND" load docker-image ratewall-gateway:latest --name "$CLUSTER"
 "$KIND" load docker-image ratewall-mocks:latest --name "$CLUSTER"
 
+echo "── namespace ────────────────────────────────────"
+# The Secret below lives in this namespace — create it before anything
+# that references it. (A fresh cluster has nothing pre-created.)
+kubectl apply -f k8s/00-namespace.yaml
+
 echo "── signing key ──────────────────────────────────"
 # One key for all replicas: a token minted by any replica must verify on
 # every other one (ADR-0007). Generated once if absent, reused afterwards,
