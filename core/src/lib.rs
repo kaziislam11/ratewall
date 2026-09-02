@@ -15,6 +15,7 @@ pub mod auth_login;
 pub mod config;
 pub mod middleware;
 pub mod middleware_auth;
+pub mod ratelimit;
 pub mod router;
 
 /// Crate version, from the workspace manifest.

@@ -58,12 +58,12 @@ impl AuthState {
     }
 }
 
-/// Verify the bearer JWT on `request`. Returns `Ok(())` when the request
-/// carries a verified token, otherwise the 401 response to send. **Fail-
+/// Verify the bearer JWT on `request`. Returns the verified `sub` claim on
+/// success (for rate-limit keying), or the 401 response to send. **Fail-
 /// closed:** every failure mode — absent header, bad scheme, bad signature,
 /// expiry, wrong issuer — is an `Err`. (`Box` keeps the `Result` small;
 /// the error path is cold and `Response` is fat.)
-pub fn check_bearer(auth: &AuthState, request: &Request) -> Result<(), Box<Response>> {
+pub fn check_bearer(auth: &AuthState, request: &Request) -> Result<String, Box<Response>> {
     let token = request
         .headers()
         .get(header::AUTHORIZATION)
@@ -82,8 +82,8 @@ pub fn check_bearer(auth: &AuthState, request: &Request) -> Result<(), Box<Respo
         auth::unix_now(),
     ) {
         Ok(subject) => {
-            tracing::info!(subject, "request authenticated");
-            Ok(())
+            tracing::info!(subject = %subject, "request authenticated");
+            Ok(subject)
         }
         Err(err) => {
             tracing::warn!(%err, "request rejected by auth");
@@ -118,7 +118,7 @@ mod tests {
     use axum::http::Request as AxumRequest;
 
     /// Drive `check_bearer` directly — it is the production gate.
-    fn verify(request: &AxumRequest<AxumBody>, auth: &AuthState) -> Result<(), Box<Response>> {
+    fn verify(request: &AxumRequest<AxumBody>, auth: &AuthState) -> Result<String, Box<Response>> {
         check_bearer(auth, request)
     }
 

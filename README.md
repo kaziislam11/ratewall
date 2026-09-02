@@ -104,7 +104,11 @@ not trust, and turning an abuse-protection failure into a full outage is
 the wrong trade. Auth will be fail-closed: if JWT verification itself
 cannot run, requests are rejected, never silently passed through. Both
 rules are fixed now, before either feature exists, so the implementation
-can't drift into whichever behavior was easier that week.
+can't drift into whichever behavior was easier that week. The limiter is
+implemented exactly that way ([ADR-0005](docs/adr/0005-rate-limiting-fail-open.md)):
+fixed-window counters in Redis, `429` + `Retry-After` when the cap is hit,
+and a pass-through (logged at WARN) when Redis is down. `just chaos` kills
+the Redis container under load and proves traffic keeps flowing.
 
 **The engine is a library; the binary is a shell** ([ADR-0002](docs/adr/0002-core-lib-gateway-bin-split.md)).
 Routing, middleware, config — all of it lives in `ratewall-core`. The
@@ -189,11 +193,10 @@ Also worth knowing: `/auth/login` is **unthrottled** today. That's fine
 while the credential is the published demo pair, but the moment a real
 credential store sits behind it — or an external issuer's endpoints are
 reachable through a rate-limited route without the login route being
-limited too — it becomes a brute-force target and needs the Phase 3
-limiter wired in front of it.
+limited too — it becomes a brute-force target and needs the limiter
+wired in front of it. (Proxied routes *are* rate-limited — see
+[ADR-0005](docs/adr/0005-rate-limiting-fail-open.md).)
 
-- **No rate limiting.** Redis is in the compose stack already because the
-  limiter will need it, but nothing reads from it yet.
 - **No circuit breakers.** A dead backend currently produces a 502 per
   request. Per-backend breakers with half-open probes are planned so one
   slow service can't degrade traffic to the others.

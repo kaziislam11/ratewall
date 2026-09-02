@@ -20,6 +20,7 @@ use ratewall_core::auth_login::{self, LoginState};
 use ratewall_core::config::GatewayConfig;
 use ratewall_core::middleware::request_id_and_trace;
 use ratewall_core::middleware_auth::AuthState;
+use ratewall_core::ratelimit::RateLimiter;
 use ratewall_core::router::{build_router, ProxyState};
 
 const DEFAULT_CONFIG_PATH: &str = "/etc/ratewall/config.toml";
@@ -140,6 +141,30 @@ async fn main() {
         (AuthState::new(verifying_key, Some(issuer)), None)
     };
 
+    // ── Rate limiter: fail-open, so an unreachable Redis at startup is ──
+    // not an error. The pool connects lazily; every failed counter op
+    // passes the request uncounted and logs a warning.
+    let limiter = match RateLimiter::connect(
+        &config.ratelimit.redis_url,
+        config.ratelimit.limit,
+        std::time::Duration::from_secs(config.ratelimit.window_secs),
+        None,
+    ) {
+        Ok(limiter) => {
+            tracing::info!(
+                url = %config.ratelimit.redis_url,
+                limit = config.ratelimit.limit,
+                window_secs = config.ratelimit.window_secs,
+                "rate limiter enabled (fail-open)"
+            );
+            Some(limiter)
+        }
+        Err(err) => {
+            eprintln!("ratewall: refusing to start — invalid rate limit config: {err}");
+            std::process::exit(1);
+        }
+    };
+
     // ── Router + middleware ─────────────────────────────────────────────
     //
     // The bearer gate lives inside the proxy fallback (ProxyState::with_auth)
@@ -147,7 +172,8 @@ async fn main() {
     // everything, including auth rejections and the login endpoint.
     let state = ProxyState::new(&routes)
         .expect("failed to build proxy state")
-        .with_auth(auth_state);
+        .with_auth(auth_state)
+        .with_limiter(limiter.expect("limiter built above"));
 
     let mut app = build_router(state);
     if let Some(login) = login_state {
@@ -163,7 +189,12 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("failed to bind gateway port");
-    axum::serve(listener, app)
-        .await
-        .expect("gateway server error");
+    // into_make_service_with_connect_info supplies the client IP the rate
+    // limiter keys on when no token was verified.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .expect("gateway server error");
 }

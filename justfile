@@ -29,3 +29,7 @@ lint:
 # Format in place
 fmt:
     cargo fmt --all
+
+# Mandatory fail-open chaos test: kill redis mid-load, traffic keeps flowing
+chaos:
+    bash scripts/chaos-redis.sh

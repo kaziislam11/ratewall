@@ -25,6 +25,10 @@ pub struct GatewayConfig {
     /// Auth configuration from `[auth]`. Defaults to "own keys" mode.
     #[serde(default)]
     pub auth: AuthConfig,
+    /// Rate limiting from `[ratelimit]`. Defaults to 100 req/min keyed by
+    /// subject (or IP when unauthenticated).
+    #[serde(default)]
+    pub ratelimit: RateLimitConfig,
 }
 
 fn default_port() -> u16 {
@@ -33,6 +37,14 @@ fn default_port() -> u16 {
 
 fn default_token_ttl_secs() -> u64 {
     900 // 15 minutes
+}
+
+fn default_rl_limit() -> u32 {
+    100
+}
+
+fn default_rl_window_secs() -> u64 {
+    60
 }
 
 /// Auth configuration (Phase 2).
@@ -85,6 +97,38 @@ impl AuthConfig {
     }
 }
 
+/// Rate-limit configuration (Phase 3).
+///
+/// Fixed window per key. Keyed by authenticated subject when a token was
+/// verified, else by client IP. Enforcement is fail-open: if Redis is
+/// unreachable, requests pass uncounted (ADR-0001).
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RateLimitConfig {
+    /// Redis URL for the shared counters.
+    pub redis_url: String,
+    /// Requests allowed per key per window.
+    #[serde(default = "default_rl_limit")]
+    pub limit: u32,
+    /// Window length in seconds.
+    #[serde(default = "default_rl_window_secs")]
+    pub window_secs: u64,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            redis_url: default_rl_redis_url(),
+            limit: default_rl_limit(),
+            window_secs: default_rl_window_secs(),
+        }
+    }
+}
+
+fn default_rl_redis_url() -> String {
+    "redis://redis:6379".into()
+}
+
 /// A validated route binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Route {
@@ -109,6 +153,8 @@ pub enum ConfigError {
     NoRoutes,
     /// The `[auth]` section is internally contradictory.
     InvalidAuth(String),
+    /// The `[ratelimit]` section has unusable values.
+    InvalidRateLimit(String),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -128,6 +174,7 @@ impl std::fmt::Display for ConfigError {
                 write!(f, "no routes configured: add at least one [routes] entry")
             }
             ConfigError::InvalidAuth(msg) => write!(f, "invalid [auth] config: {msg}"),
+            ConfigError::InvalidRateLimit(msg) => write!(f, "invalid [ratelimit] config: {msg}"),
         }
     }
 }
@@ -167,6 +214,21 @@ impl GatewayConfig {
 
         if self.routes.is_empty() {
             return Err(ConfigError::NoRoutes);
+        }
+        if self.ratelimit.limit == 0 {
+            return Err(ConfigError::InvalidRateLimit(
+                "limit must be at least 1".into(),
+            ));
+        }
+        if self.ratelimit.window_secs == 0 {
+            return Err(ConfigError::InvalidRateLimit(
+                "window_secs must be at least 1".into(),
+            ));
+        }
+        if self.ratelimit.redis_url.is_empty() {
+            return Err(ConfigError::InvalidRateLimit(
+                "redis_url must not be empty".into(),
+            ));
         }
         let mut routes = Vec::with_capacity(self.routes.len());
         for (prefix, backend) in &self.routes {
@@ -265,6 +327,7 @@ hrm = "http://hrm:3001"
             port: 8080,
             routes: BTreeMap::from([("crm".to_string(), "tcp://crm:3000".to_string())]),
             auth: AuthConfig::default(),
+            ratelimit: RateLimitConfig::default(),
         };
         assert_eq!(
             config.validate().unwrap_err(),
@@ -281,6 +344,7 @@ hrm = "http://hrm:3001"
             port: 8080,
             routes: BTreeMap::from([("crm".to_string(), "http://".to_string())]),
             auth: AuthConfig::default(),
+            ratelimit: RateLimitConfig::default(),
         };
         assert!(matches!(
             config.validate().unwrap_err(),
@@ -294,6 +358,7 @@ hrm = "http://hrm:3001"
             port: 8080,
             routes: BTreeMap::from([("crm".to_string(), "http://crm:3000/".to_string())]),
             auth: AuthConfig::default(),
+            ratelimit: RateLimitConfig::default(),
         };
         let routes = config.validate().expect("valid");
         assert_eq!(routes[0].backend, "http://crm:3000");
@@ -341,6 +406,61 @@ hrm = "http://hrm:3001"
     fn auth_unknown_keys_are_rejected() {
         let err = GatewayConfig::from_toml(
             "[routes]\ncrm = \"http://crm:3000\"\n\n[auth]\nsecret = \"hunter2\"\n",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn ratelimit_defaults_apply_when_section_missing() {
+        let config =
+            GatewayConfig::from_toml("[routes]\ncrm = \"http://crm:3000\"\n").expect("valid");
+        assert_eq!(config.ratelimit.limit, 100);
+        assert_eq!(config.ratelimit.window_secs, 60);
+        assert_eq!(config.ratelimit.redis_url, "redis://redis:6379");
+    }
+
+    #[test]
+    fn ratelimit_section_overrides_defaults() {
+        let config = GatewayConfig::from_toml(
+            "[routes]\ncrm = \"http://crm:3000\"\n\n[ratelimit]\nredis_url = \"redis://r:1\"\nlimit = 5\nwindow_secs = 30\n",
+        )
+        .expect("valid");
+        assert_eq!(config.ratelimit.limit, 5);
+        assert_eq!(config.ratelimit.window_secs, 30);
+    }
+
+    #[test]
+    fn ratelimit_zero_limit_is_rejected() {
+        let err = GatewayConfig::from_toml(
+            "[routes]\ncrm = \"http://crm:3000\"\n\n[ratelimit]\nredis_url = \"redis://r:1\"\nlimit = 0\n",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidRateLimit(_)));
+    }
+
+    #[test]
+    fn ratelimit_zero_window_is_rejected() {
+        let err = GatewayConfig::from_toml(
+            "[routes]\ncrm = \"http://crm:3000\"\n\n[ratelimit]\nredis_url = \"redis://r:1\"\nwindow_secs = 0\n",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidRateLimit(_)));
+    }
+
+    #[test]
+    fn ratelimit_empty_redis_url_is_rejected() {
+        let err = GatewayConfig::from_toml(
+            "[routes]\ncrm = \"http://crm:3000\"\n\n[ratelimit]\nredis_url = \"\"\n",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidRateLimit(_)));
+    }
+
+    #[test]
+    fn ratelimit_unknown_keys_are_rejected() {
+        let err = GatewayConfig::from_toml(
+            "[routes]\ncrm = \"http://crm:3000\"\n\n[ratelimit]\nbogus = true\n",
         )
         .unwrap_err();
         assert!(matches!(err, ConfigError::Parse(_)));

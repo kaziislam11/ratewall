@@ -1,4 +1,4 @@
-# ratewall gateway configuration (Phase 1)
+# ratewall gateway configuration (Phase 3)
 # Validated at startup — the gateway refuses to start on bad config.
 
 port = 8080
@@ -6,3 +6,11 @@ port = 8080
 [routes]
 crm = "http://crm:3000"
 hrm = "http://hrm:3001"
+
+# Rate limiting: 100 requests per minute per subject (or IP when
+# unauthenticated). Enforcement is fail-open — if Redis is unreachable,
+# requests pass uncounted rather than being blocked (see docs/adr/0001).
+[ratelimit]
+redis_url = "redis://redis:6379"
+limit = 100
+window_secs = 60

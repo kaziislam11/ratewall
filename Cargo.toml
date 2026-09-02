@@ -19,6 +19,9 @@ ed25519-dalek = { version = "2", features = ["pem", "rand_core"] }
 rand_core = { version = "0.6", features = ["std"] }
 base64 = "0.22"
 pem-rfc7468 = "0.7"
+# Redis connection pool for the fail-open rate limiter (Phase 3).
+deadpool-redis = { version = "0.15", features = ["rt_tokio_1"] }
+redis = { version = "0.25", default-features = false, features = ["tokio-comp", "script"] }
 
 [profile.release]
 lto = "thin"

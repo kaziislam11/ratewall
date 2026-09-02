@@ -14,6 +14,7 @@ use axum::routing::get;
 use axum::Router;
 
 use crate::config::Route;
+use crate::ratelimit::{limit_key, Decision, RateLimiter};
 
 /// Shared proxy state.
 #[derive(Debug, Clone)]
@@ -24,6 +25,9 @@ pub struct ProxyState {
     /// Optional Phase 2 auth gate: when set, the proxied fallback verifies
     /// a bearer JWT before forwarding. `/healthz` is never gated.
     auth: Option<crate::middleware_auth::AuthState>,
+    /// Optional Phase 3 rate limiter: fixed-window Redis counters,
+    /// fail-open. Applied after auth so verified subjects key the limit.
+    limiter: Option<RateLimiter>,
 }
 
 impl ProxyState {
@@ -39,12 +43,19 @@ impl ProxyState {
             backends,
             client,
             auth: None,
+            limiter: None,
         })
     }
 
     /// Enable the fail-closed bearer gate on proxied routes (Phase 2).
     pub fn with_auth(mut self, auth: crate::middleware_auth::AuthState) -> Self {
         self.auth = Some(auth);
+        self
+    }
+
+    /// Enable the fail-open rate limiter on proxied routes (Phase 3).
+    pub fn with_limiter(mut self, limiter: RateLimiter) -> Self {
+        self.limiter = Some(limiter);
         self
     }
 
@@ -71,11 +82,28 @@ async fn healthz() -> StatusCode {
 
 /// Catch-all: parse `/{prefix}[/{rest}]` and proxy to the matching backend.
 /// With Phase 2 auth enabled, verify the bearer token before forwarding.
+/// With Phase 3 rate limiting enabled, count against a fixed window after
+/// auth (so verified subjects key the limit) and before forwarding.
 async fn proxy_fallback(State(state): State<ProxyState>, request: Request) -> Response {
-    if let Some(auth) = &state.auth {
-        if let Err(response) = crate::middleware_auth::check_bearer(auth, &request) {
-            return *response;
+    let subject = if let Some(auth) = &state.auth {
+        match crate::middleware_auth::check_bearer(auth, &request) {
+            Ok(subject) => Some(subject),
+            Err(response) => return *response,
         }
+    } else {
+        None
+    };
+    if let Some(limiter) = &state.limiter {
+        let key = limit_key(subject.as_deref(), "unkeyed");
+        if let Decision::Limit(retry_after) = limiter.decide(&key).await {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [("retry-after", retry_after.to_string())],
+                "rate limit exceeded",
+            )
+                .into_response();
+        }
+        // Decision::Allow and Decision::Open both proceed.
     }
     let full_path = request.uri().path().to_string();
     let trimmed = full_path.trim_start_matches('/');
