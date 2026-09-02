@@ -3,7 +3,6 @@ name = "ratewall-gateway"
 description = "ratewall reverse proxy / API gateway (binary)"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
 
 [[bin]]
 name = "ratewall"

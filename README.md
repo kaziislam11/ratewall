@@ -301,7 +301,3 @@ In rough order, each a self-contained change:
 The audit-ledger integration is deliberately absent from this list. The
 gateway's job is to log in an ingestable shape, not to know the ledger
 exists.
-
-## License
-
-MIT.

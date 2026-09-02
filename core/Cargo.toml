@@ -3,7 +3,6 @@ name = "ratewall-core"
 description = "ratewall engine: router, middleware, auth, rate limiting, circuit breakers"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
 
 [dependencies]
 axum = { workspace = true }
