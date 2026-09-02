@@ -33,3 +33,27 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+  # The README's claims, proven against the real compose stack on every
+  # push: routing, fail-closed auth, and — via the chaos script — the
+  # fail-open rate-limit guarantee (kill Redis mid-load, traffic keeps
+  # flowing, enforcement recovers, gateway never restarts).
+  compose-smoke:
+    runs-on: ubuntu-latest
+    needs: build-test
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and start the stack
+        run: timeout 300 docker compose up -d --build --wait
+
+      - name: Smoke test
+        run: bash scripts/smoke.sh
+
+      - name: Chaos test — kill Redis mid-load
+        run: bash scripts/chaos-redis.sh
+
+      - name: Debug — gateway logs
+        if: failure()
+        run: docker compose logs gateway | tail -100

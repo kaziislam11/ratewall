@@ -34,6 +34,10 @@ fmt:
 chaos:
     bash scripts/chaos-redis.sh
 
+# Smoke-test the running stack: every public surface, expected status codes
+smoke:
+    bash scripts/smoke.sh
+
 # Install the pre-push hook (fmt + clippy gate) for this clone
 install-hooks:
     git config core.hooksPath scripts/hooks
