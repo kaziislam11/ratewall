@@ -59,7 +59,9 @@ else
 fi
 
 echo "── deploy ───────────────────────────────────────"
-kubectl apply -f k8s/
+# Apply the manifests only — kind-config.yaml (the cluster definition)
+# lives beside them but is not a k8s manifest.
+kubectl apply $(find k8s -name '*.yaml' ! -name 'kind-config.yaml' | sed 's/^/-f /')
 # Expose via NodePort on the port k8s/kind-config.yaml already maps to the host.
 kubectl patch svc gateway --namespace ratewall \
   -p '{"spec":{"type":"NodePort","ports":[{"port":8080,"targetPort":"http","nodePort":31080}]}}' \
