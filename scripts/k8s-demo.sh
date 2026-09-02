@@ -40,19 +40,20 @@ echo "── signing key ──────────────────�
 # every other one (ADR-0007). Generated once if absent, reused afterwards,
 # so tokens minted by earlier demo runs stay valid.
 if ! kubectl get secret gateway-keys --namespace ratewall >/dev/null 2>&1; then
-  # Generate inside a container writing into the repo dir (a mounted host
-  # temp path is unreliable from Git Bash on Windows), then read it back.
-  rm -f k8s/.generated-signing_key.pem
-  docker run --rm -v "$(pwd)/k8s:/out" debian:bookworm-slim \
+  # Generate inside a container (openssl isn't assumed on the host) and
+  # pipe the PEM out; no host filesystem writes, which also sidesteps
+  # DockerDesktop file-sharing permissions on bind-mounted repo dirs.
+  KEY_PEM="$(mktemp)"
+  docker run --rm debian:bookworm-slim \
     sh -c 'apt-get update -qq >/dev/null 2>&1 \
       && apt-get install -y -qq openssl >/dev/null 2>&1 \
-      && openssl genpkey -algorithm ed25519 -out /out/.generated-signing_key.pem' \
+      && openssl genpkey -algorithm ed25519' >"$KEY_PEM" \
     || fail "could not generate a signing key"
-  [ -s k8s/.generated-signing_key.pem ] || fail "key generation produced an empty file"
+  [ -s "$KEY_PEM" ] || fail "key generation produced an empty file"
   kubectl create secret generic gateway-keys \
     --namespace ratewall \
-    --from-file=signing_key.pem=k8s/.generated-signing_key.pem
-  rm -f k8s/.generated-signing_key.pem
+    --from-file=signing_key.pem="$KEY_PEM"
+  rm -f "$KEY_PEM"
   echo "created gateway-keys Secret with a fresh Ed25519 key"
 else
   echo "reusing existing gateway-keys Secret"
