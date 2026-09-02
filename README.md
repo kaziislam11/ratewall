@@ -345,7 +345,10 @@ docker run --rm -v "$PWD":/build -w /build rust:1.88-slim \
 
 (That command exists because the author's machine had Docker but no Rust
 toolchain, and "CI will catch it" turned out to mean "four failed runs
-later". Run it before pushing.)
+later". Run it before pushing — or let the hook do it: `just
+install-hooks` points git at `scripts/hooks`, and every `git push` then
+runs fmt + clippy first (skippable once with `git push --no-verify`;
+CI remains the real gate for tests).)
 
 ## Project layout
 

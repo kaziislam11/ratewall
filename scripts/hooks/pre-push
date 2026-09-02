@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Pre-push gate: `cargo fmt --check` + `clippy -D warnings` before every
+# push, so unformatted or unlinted code never reaches CI (three red runs in
+# a row were enough). Runs in the same rust:1.88-slim image CI uses when no
+# local toolchain exists — this machine has Docker but no Rust.
+#
+# Escape hatch for WIP pushes: git push --no-verify. CI remains the real
+# gate; tests stay there, this only checks what fails fast.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+echo "pre-push: fmt + clippy (--no-verify to skip)"
+
+if command -v cargo >/dev/null 2>&1; then
+    cargo fmt --all -- --check
+    cargo clippy --workspace --all-targets -- -D warnings
+else
+    # /$(pwd) turns Git Bash's /c/Users/... into the //c/Users/... form
+    # Docker Desktop accepts without MSYS path mangling (MSYS_NO_PATHCONV=1).
+    MSYS_NO_PATHCONV=1 docker run --rm -v "/$(pwd):/app" -w /app rust:1.88-slim \
+        bash -c "rustup component add rustfmt clippy >/dev/null 2>&1
+                 cargo fmt --all -- --check
+                 cargo clippy --workspace --all-targets -- -D warnings"
+fi
+
+echo "pre-push: ok"

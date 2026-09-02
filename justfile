@@ -33,3 +33,8 @@ fmt:
 # Mandatory fail-open chaos test: kill redis mid-load, traffic keeps flowing
 chaos:
     bash scripts/chaos-redis.sh
+
+# Install the pre-push hook (fmt + clippy gate) for this clone
+install-hooks:
+    git config core.hooksPath scripts/hooks
+    @echo "installed: pushes now run 'just lint' equivalent first (git push --no-verify to skip)"
