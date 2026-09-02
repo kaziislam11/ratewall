@@ -6,6 +6,7 @@
 //! extends this struct; validation grows with it.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -21,10 +22,67 @@ pub struct GatewayConfig {
     /// config.toml, e.g. `crm = "http://crm:3000"`.
     #[serde(default)]
     pub routes: BTreeMap<String, String>,
+    /// Auth configuration from `[auth]`. Defaults to "own keys" mode.
+    #[serde(default)]
+    pub auth: AuthConfig,
 }
 
 fn default_port() -> u16 {
     8080
+}
+
+fn default_token_ttl_secs() -> u64 {
+    900 // 15 minutes
+}
+
+/// Auth configuration (Phase 2).
+///
+/// Two modes, mutually exclusive by validation:
+///
+/// - **Own keys (default).** No `[auth]` section at all, or an empty one.
+///   The gateway generates an Ed25519 keypair in `keys_dir` on first boot
+///   and issues tokens at `/auth/login`.
+/// - **External issuer.** Set `issuer` + `issuer_public_key_pem`; the
+///   gateway then only *verifies* tokens from that issuer and the demo
+///   login endpoint is disabled.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AuthConfig {
+    /// Directory holding the signing keypair (own-keys mode). In the demo
+    /// compose stack this is a named volume so tokens survive restarts.
+    #[serde(default)]
+    pub keys_dir: Option<PathBuf>,
+    /// Trusted issuer for externally-issued tokens (external-issuer mode).
+    #[serde(default)]
+    pub issuer: Option<String>,
+    /// Path to the trusted issuer's Ed25519 public key in PEM
+    /// (external-issuer mode).
+    #[serde(default)]
+    pub issuer_public_key_pem: Option<PathBuf>,
+    /// Lifetime of tokens issued by the demo login endpoint, in seconds.
+    #[serde(default = "default_token_ttl_secs")]
+    pub token_ttl_secs: u64,
+}
+
+// Manual impl: the derived one would give `token_ttl_secs: 0` whenever the
+// whole `[auth]` section is absent (serde's section-level `default` skips
+// per-field defaults), which would mint instantly-expired tokens.
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            keys_dir: None,
+            issuer: None,
+            issuer_public_key_pem: None,
+            token_ttl_secs: default_token_ttl_secs(),
+        }
+    }
+}
+
+impl AuthConfig {
+    /// True when the gateway issues its own tokens (demo login enabled).
+    pub fn issues_own_tokens(&self) -> bool {
+        self.issuer.is_none() && self.issuer_public_key_pem.is_none()
+    }
 }
 
 /// A validated route binding.
@@ -49,6 +107,8 @@ pub enum ConfigError {
     },
     /// The route table is empty — nothing to proxy.
     NoRoutes,
+    /// The `[auth]` section is internally contradictory.
+    InvalidAuth(String),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -67,6 +127,7 @@ impl std::fmt::Display for ConfigError {
             ConfigError::NoRoutes => {
                 write!(f, "no routes configured: add at least one [routes] entry")
             }
+            ConfigError::InvalidAuth(msg) => write!(f, "invalid [auth] config: {msg}"),
         }
     }
 }
@@ -85,6 +146,25 @@ impl GatewayConfig {
     /// Validate the parsed config. Called from `from_toml` and available for
     /// programmatically-built configs (tests, future CLI overrides).
     pub fn validate(&self) -> Result<Vec<Route>, ConfigError> {
+        // Auth: issuer and its public key must be set together (external
+        // mode), and `keys_dir` must be present in own-keys mode. In tests
+        // and programmatic configs a missing keys_dir falls back to the
+        // default at startup, so only reject the impossible combinations
+        // here: a half-specified external issuer.
+        match (&self.auth.issuer, &self.auth.issuer_public_key_pem) {
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(ConfigError::InvalidAuth(
+                    "issuer and issuer_public_key_pem must be set together".into(),
+                ));
+            }
+            _ => {}
+        }
+        if !self.auth.issues_own_tokens() && self.auth.keys_dir.is_none() {
+            return Err(ConfigError::InvalidAuth(
+                "keys_dir is required to hold the verifier's own signing key".into(),
+            ));
+        }
+
         if self.routes.is_empty() {
             return Err(ConfigError::NoRoutes);
         }
@@ -184,6 +264,7 @@ hrm = "http://hrm:3001"
         let config = GatewayConfig {
             port: 8080,
             routes: BTreeMap::from([("crm".to_string(), "tcp://crm:3000".to_string())]),
+            auth: AuthConfig::default(),
         };
         assert_eq!(
             config.validate().unwrap_err(),
@@ -199,6 +280,7 @@ hrm = "http://hrm:3001"
         let config = GatewayConfig {
             port: 8080,
             routes: BTreeMap::from([("crm".to_string(), "http://".to_string())]),
+            auth: AuthConfig::default(),
         };
         assert!(matches!(
             config.validate().unwrap_err(),
@@ -211,8 +293,56 @@ hrm = "http://hrm:3001"
         let config = GatewayConfig {
             port: 8080,
             routes: BTreeMap::from([("crm".to_string(), "http://crm:3000/".to_string())]),
+            auth: AuthConfig::default(),
         };
         let routes = config.validate().expect("valid");
         assert_eq!(routes[0].backend, "http://crm:3000");
+    }
+
+    #[test]
+    fn auth_defaults_to_own_keys_mode() {
+        let config = GatewayConfig::from_toml(VALID).expect("valid");
+        assert!(config.auth.issues_own_tokens());
+        assert_eq!(config.auth.token_ttl_secs, 900);
+        // Deserialized `auth` defaults carry the 15-minute TTL too.
+        let config =
+            GatewayConfig::from_toml("[routes]\ncrm = \"http://crm:3000\"\n").expect("minimal");
+        assert_eq!(config.auth.token_ttl_secs, 900);
+    }
+
+    #[test]
+    fn auth_issuer_without_key_is_rejected() {
+        let err = GatewayConfig::from_toml(
+            "[routes]\ncrm = \"http://crm:3000\"\n\n[auth]\nissuer = \"https://ext\"\n",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidAuth(_)));
+    }
+
+    #[test]
+    fn auth_key_without_issuer_is_rejected() {
+        let err = GatewayConfig::from_toml(
+            "[routes]\ncrm = \"http://crm:3000\"\n\n[auth]\nissuer_public_key_pem = \"/keys/ext.pem\"\n",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidAuth(_)));
+    }
+
+    #[test]
+    fn auth_external_mode_with_both_fields_is_valid() {
+        let config = GatewayConfig::from_toml(
+            "[routes]\ncrm = \"http://crm:3000\"\n\n[auth]\nissuer = \"https://ext\"\nissuer_public_key_pem = \"/keys/ext.pem\"\nkeys_dir = \"/keys\"\n",
+        )
+        .expect("valid external issuer config");
+        assert!(!config.auth.issues_own_tokens());
+    }
+
+    #[test]
+    fn auth_unknown_keys_are_rejected() {
+        let err = GatewayConfig::from_toml(
+            "[routes]\ncrm = \"http://crm:3000\"\n\n[auth]\nsecret = \"hunter2\"\n",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
     }
 }

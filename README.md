@@ -126,9 +126,53 @@ file change, not a code change.
 
 Stated plainly so nobody has to reverse-engineer it from the source:
 
-- **No authentication.** Anything that reaches a configured route is
-  proxied. JWT auth (fail-closed, with the gateway able to issue its own
-  demo tokens) is the next milestone.
+- **Not an identity provider.** The auth described below verifies tokens
+  and (in demo mode) issues short-lived ones for a hardcoded user. There is
+  no user database, no password reset, no refresh flow.
+
+### Authentication (Ed25519 JWT, fail-closed)
+
+Proxied routes require a valid bearer token. `/healthz` and `/auth/*` are
+the only unauthenticated paths.
+
+On first boot the gateway generates an Ed25519 keypair, stores it on the
+`gateway-keys` volume (private key mode 0600), and reuses it on every
+restart — so issued tokens survive restarts and image rebuilds.
+
+```bash
+# 1. Mint a token (demo credentials, documented on purpose):
+TOKEN=$(curl -s -X POST -H 'content-type: application/json' \
+  -d '{"username":"demo","password":"demo-password"}' \
+  http://localhost:8080/auth/login | sed 's/.*"token":"\([^"]*\)".*/\1/')
+
+# 2. Use it. No token, garbage, tampered, or expired → 401, always:
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/crm/customers/42
+# → {"path":"/customers/42","service":"crm"}
+```
+
+Tokens are compact JWS with `alg: EdDSA` (RFC 8037), claims `sub`, `iss`,
+`iat`, `exp`, and a 15-minute TTL (configurable via `[auth] token_ttl_secs`).
+Verification is **fail-closed**: any error — malformed header, wrong
+algorithm (including the classic `alg: none` attack), bad signature,
+expired, wrong issuer — is a 401. Rejection responses don't tell the caller
+*which* failure occurred; the detail goes to the gateway log instead.
+
+To trust an external identity provider instead (Supabase et al.), set the
+`[auth]` section with `issuer` + `issuer_public_key_pem` (an Ed25519 public
+key in PEM). The demo login endpoint then disables itself — the gateway
+only verifies, it never issues.
+
+```toml
+[auth]
+issuer = "https://your-idp.example"
+issuer_public_key_pem = "/keys/idp-public.pem"
+# token_ttl_secs = 900   # lifetime of demo-issued tokens
+```
+
+This is a demo issuer, not an identity provider. The demo credential is
+published here on purpose — the point is that `docker compose up` works
+with zero setup. Don't use the demo credentials anywhere real.
+
 - **No rate limiting.** Redis is in the compose stack already because the
   limiter will need it, but nothing reads from it yet.
 - **No circuit breakers.** A dead backend currently produces a 502 per
@@ -225,9 +269,21 @@ port = 8080
 [routes]
 crm = "http://crm:3000"
 hrm = "http://hrm:3001"
+
+# Optional. Omit the whole section to run in own-keys demo mode (the
+# gateway generates its signing keypair and serves POST /auth/login).
+[auth]
+# External-issuer mode — issuer and key must be set together, and doing
+# so disables the demo login endpoint:
+# issuer = "https://your-idp.example"
+# issuer_public_key_pem = "/keys/idp-public.pem"
+# Where the gateway stores its own keypair (own-keys mode):
+# keys_dir = "/var/lib/ratewall/keys"
+# Lifetime of demo-issued tokens, in seconds (default 900 = 15 min):
+# token_ttl_secs = 900
 ```
 
-That is the whole schema. Everything else is rejected at startup. In the
+Everything outside this schema is rejected at startup. In the
 compose stack the file is mounted read-only at
 `/etc/ratewall/config.toml`; point `RATEWALL_CONFIG` somewhere else (or
 remount your own file) to reconfigure without touching the image.
@@ -236,7 +292,7 @@ remount your own file) to reconfigure without touching the image.
 
 ```bash
 just build    # cargo build --workspace
-just test     # unit + integration tests (17 across config/router/middleware)
+just test     # unit + integration tests (40 across config/router/middleware/auth)
 just lint     # rustfmt --check + clippy with -D warnings
 just up       # docker compose up --build -d
 just logs     # tail gateway logs

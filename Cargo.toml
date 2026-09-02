@@ -13,6 +13,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Ed25519 signing/verification for JWTs (auth, fail-closed). `pem` lets us
+# store keys in the standard PEM form on the keys volume.
+ed25519-dalek = { version = "2", features = ["pem", "rand_core"] }
+rand_core = { version = "0.6", features = ["std"] }
+base64 = "0.22"
+pem-rfc7468 = "0.7"
 
 [profile.release]
 lto = "thin"

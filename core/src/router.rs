@@ -21,6 +21,9 @@ pub struct ProxyState {
     /// prefix → backend base URL (no trailing slash).
     backends: BTreeMap<String, String>,
     client: reqwest::Client,
+    /// Optional Phase 2 auth gate: when set, the proxied fallback verifies
+    /// a bearer JWT before forwarding. `/healthz` is never gated.
+    auth: Option<crate::middleware_auth::AuthState>,
 }
 
 impl ProxyState {
@@ -32,7 +35,17 @@ impl ProxyState {
         // Phase 1 keeps a single shared client; per-route timeouts move into
         // the circuit-breaker wrapper in Phase 4.
         let client = reqwest::Client::builder().build()?;
-        Ok(Self { backends, client })
+        Ok(Self {
+            backends,
+            client,
+            auth: None,
+        })
+    }
+
+    /// Enable the fail-closed bearer gate on proxied routes (Phase 2).
+    pub fn with_auth(mut self, auth: crate::middleware_auth::AuthState) -> Self {
+        self.auth = Some(auth);
+        self
     }
 
     pub fn backend_for(&self, prefix: &str) -> Option<&str> {
@@ -57,7 +70,13 @@ async fn healthz() -> StatusCode {
 }
 
 /// Catch-all: parse `/{prefix}[/{rest}]` and proxy to the matching backend.
+/// With Phase 2 auth enabled, verify the bearer token before forwarding.
 async fn proxy_fallback(State(state): State<ProxyState>, request: Request) -> Response {
+    if let Some(auth) = &state.auth {
+        if let Err(response) = crate::middleware_auth::check_bearer(auth, &request) {
+            return *response;
+        }
+    }
     let full_path = request.uri().path().to_string();
     let trimmed = full_path.trim_start_matches('/');
     let (prefix, rest) = match trimmed.split_once('/') {
