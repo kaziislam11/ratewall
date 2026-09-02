@@ -1,2 +1,3 @@
-generated signing keys are never committed
+# From an abandoned key-generation approach that wrote into k8s/; kept as
+# a guard in case one ever does again.
 .gen-signing_key.pem

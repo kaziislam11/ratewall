@@ -10,7 +10,8 @@ set -euo pipefail
 
 KIND="${KIND:-kind}"
 CLUSTER="${CLUSTER:-ratewall}"
-HOST_PORT="${HOST_PORT:-31080}"
+NS="${NS:-ratewall}"
+HOST_PORT="${HOST_PORT:-31080}"   # must match k8s/kind-config.yaml
 BASE="http://localhost:${HOST_PORT}"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -44,7 +45,7 @@ echo "── signing key ──────────────────�
 # One key for all replicas: a token minted by any replica must verify on
 # every other one (ADR-0007). Generated once if absent, reused afterwards,
 # so tokens minted by earlier demo runs stay valid.
-if ! kubectl get secret gateway-keys --namespace ratewall >/dev/null 2>&1; then
+if ! kubectl get secret gateway-keys --namespace "$NS" >/dev/null 2>&1; then
   # Generate inside a container (openssl isn't assumed on the host) and
   # pipe the PEM out; no host filesystem writes, which also sidesteps
   # DockerDesktop file-sharing permissions on bind-mounted repo dirs.
@@ -56,7 +57,7 @@ if ! kubectl get secret gateway-keys --namespace ratewall >/dev/null 2>&1; then
     || fail "could not generate a signing key"
   [ -s "$KEY_PEM" ] || fail "key generation produced an empty file"
   kubectl create secret generic gateway-keys \
-    --namespace ratewall \
+    --namespace "$NS" \
     --from-file=signing_key.pem="$KEY_PEM"
   rm -f "$KEY_PEM"
   echo "created gateway-keys Secret with a fresh Ed25519 key"
@@ -68,14 +69,14 @@ echo "── deploy ────────────────────
 # Apply the manifests only — kind-config.yaml (the cluster definition)
 # lives beside them but is not a k8s manifest.
 kubectl apply $(find k8s -name '*.yaml' ! -name 'kind-config.yaml' | sed 's/^/-f /')
-# Expose via NodePort on the port k8s/kind-config.yaml already maps to the host.
-kubectl patch svc gateway --namespace ratewall \
-  -p '{"spec":{"type":"NodePort","ports":[{"port":8080,"targetPort":"http","nodePort":31080}]}}' \
+# Expose via NodePort on the port k8s/kind-config.yaml maps to the host.
+kubectl patch svc gateway --namespace "$NS" \
+  -p '{"spec":{"type":"NodePort","ports":[{"port":8080,"targetPort":"http","nodePort":'"$HOST_PORT"'}]}}' \
   >/dev/null
-kubectl --namespace ratewall rollout status deploy/gateway --timeout=180s
-kubectl --namespace ratewall rollout status deploy/crm --timeout=120s
-kubectl --namespace ratewall rollout status deploy/hrm --timeout=120s
-kubectl --namespace ratewall get pods
+kubectl --namespace "$NS" rollout status deploy/gateway --timeout=180s
+kubectl --namespace "$NS" rollout status deploy/crm --timeout=120s
+kubectl --namespace "$NS" rollout status deploy/hrm --timeout=120s
+kubectl --namespace "$NS" get pods
 
 # Wait until the gateway answers through the NodePort mapping.
 echo "── waiting for the gateway on ${BASE} ───────────"
@@ -95,7 +96,7 @@ AUTH="Authorization: Bearer $TOKEN"
   || fail "proxied request failed"
 
 echo "── kill a gateway pod under load ────────────────"
-POD="$(kubectl --namespace ratewall get pods -l app=gateway \
+POD="$(kubectl --namespace "$NS" get pods -l app=gateway \
   -o jsonpath='{.items[0].metadata.name}')"
 echo "killing $POD"
 
@@ -112,7 +113,7 @@ LOAD_OUT="$(mktemp)"
 LOAD_PID=$!
 
 sleep 3
-kubectl --namespace ratewall delete pod "$POD" --wait=false >/dev/null
+kubectl --namespace "$NS" delete pod "$POD" --wait=false >/dev/null
 
 wait "$LOAD_PID"
 TOTAL="$(grep -c '^' "$LOAD_OUT")"
@@ -131,13 +132,13 @@ fi
 
 # The Deployment must have replaced the killed pod: back to 3 ready replicas.
 for _ in $(seq 1 30); do
-  READY="$(kubectl --namespace ratewall get deploy gateway \
+  READY="$(kubectl --namespace "$NS" get deploy gateway \
     -o jsonpath='{.status.readyReplicas}')"
   [ "$READY" = "3" ] && break
   sleep 2
 done
 [ "$READY" = "3" ] || fail "gateway never returned to 3 ready replicas"
-kubectl --namespace ratewall get pods -l app=gateway
+kubectl --namespace "$NS" get pods -l app=gateway
 
 rm -f "$LOAD_OUT"
 echo "PASS: pod killed under load, survivors absorbed the traffic, replica replaced — zero failed requests."

@@ -2,11 +2,12 @@
 # Phase 7 demo (BUILD_PLAN.md): a rolling gateway update under continuous
 # load with zero dropped requests.
 #
-# Mechanism: tag the current image as the "old" release, apply a small but
-# visible change (an env var the gateway logs), push it as the "new" tag,
-# and roll. Because /readyz reflects real component health, a replica only
-# leaves and rejoins the Service when it can actually serve — that is what
-# makes the zero-dropped assertion honest rather than lucky.
+# Mechanism: build the gateway image once, tag it as two releases (v1, v2),
+# and roll between them — Kubernetes sees a changed image reference, so
+# every replica is genuinely replaced. Because /readyz reflects real
+# component health, a replica only leaves and rejoins the Service when it
+# can actually serve — that is what makes the zero-dropped assertion
+# honest rather than lucky.
 #
 # Prereqs: an up-to-date cluster from scripts/k8s-demo.sh (it reuses it).
 set -euo pipefail
@@ -30,9 +31,8 @@ kubectl get ns ratewall >/dev/null 2>&1 \
 cd "$(dirname "$0")/.."
 
 echo "── release tags ─────────────────────────────────"
-# Build once, tag as both releases: the delta between releases is the
-# logged version env var, not the binary — exactly how a config-level
-# rollout behaves.
+# One image, two tags: the rollout is driven by the changed image
+# reference, exactly like a real release.
 docker build -f gateway/Dockerfile -t ratewall-gateway:$OLD_TAG .
 docker tag ratewall-gateway:$OLD_TAG ratewall-gateway:$NEW_TAG
 "$KIND" load docker-image ratewall-gateway:$OLD_TAG --name "$CLUSTER"
@@ -57,13 +57,11 @@ status() { curl -s -o /dev/null -w '%{http_code}' -H "$AUTH" "$@"; }
 [ "$(status "$BASE/crm/ping")" = "200" ] || fail "proxied request failed before rollout"
 
 echo "── rolling update under load ────────────────────"
-# The demo limiter allows 100 req/min per subject — the whole point of
-# the demo is that enforcement works. Rather than disable it, log in a
-# second, dedicated load subject... which the demo issuer doesn't have.
-# So instead: keep the load loop's request rate under the cap by pausing
-# whenever a 429 says the window is exhausted — a 429 during steady state
-# is the limiter working, not the rollout dropping requests. Only errors
-# (5xx, timeouts, connection failures) count as drops.
+# The demo limiter allows 100 req/min per subject, and the load loop runs
+# for 60s — so enforcement will 429 the tail of the window. Rather than
+# disabling the limiter, the loop pauses 2s on any 429: a steady-state
+# 429 is the limiter working, not the rollout dropping requests. Only
+# errors (5xx, timeouts, connection failures) count as drops.
 LOAD_OUT="$(mktemp)"
 (
   end=$((SECONDS + 60))
