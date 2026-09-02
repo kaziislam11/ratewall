@@ -407,17 +407,107 @@ mod tests {
 
     #[test]
     fn load_or_create_is_idempotent_and_persistent() {
-        let dir = std::env::temp_dir().join(format!("ratewall-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let (key1, created1) = load_or_create_signing_key(&dir).expect("first boot");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (key1, created1) = load_or_create_signing_key(dir.path()).expect("first boot");
         assert!(created1);
-        let (key2, created2) = load_or_create_signing_key(&dir).expect("second boot");
+        let (key2, created2) = load_or_create_signing_key(dir.path()).expect("second boot");
         assert!(!created2);
         assert_eq!(key1.to_bytes(), key2.to_bytes());
         // A token issued on "first boot" still verifies on "second boot".
         let token = issue_token(&key1, "ratewall", "u", 1_700_000_000, DEFAULT_TOKEN_TTL).unwrap();
         assert!(verify_token(&key2.verifying_key(), &token, None, 1_700_000_000).is_ok());
-        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_pem_fails_boot_and_is_not_overwritten() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let private_path = dir.path().join(PRIVATE_KEY_FILE);
+        std::fs::write(&private_path, "this is not a pem file at all").unwrap();
+
+        let err = load_or_create_signing_key(dir.path()).unwrap_err();
+        assert!(matches!(err, AuthError::BadKeyMaterial(_)));
+
+        // Fail-closed means the corrupt file must still be there — the load
+        // path must never replace key material it failed to parse, because
+        // silently re-minting would invalidate every outstanding token and
+        // look exactly like a successful recovery.
+        let contents = std::fs::read_to_string(&private_path).unwrap();
+        assert_eq!(contents, "this is not a pem file at all");
+    }
+
+    #[test]
+    fn truncated_pem_fails_boot() {
+        // A PEM cut short mid-base64 parses as PEM-ish garbage; must error,
+        // not panic and not fall through to generation.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (good, _) = load_or_create_signing_key(dir.path()).expect("generate");
+        let _ = good;
+        let private_path = dir.path().join(PRIVATE_KEY_FILE);
+        let full = std::fs::read_to_string(&private_path).unwrap();
+        std::fs::write(&private_path, &full[..full.len() / 2]).unwrap();
+
+        assert!(matches!(
+            load_or_create_signing_key(dir.path()),
+            Err(AuthError::BadKeyMaterial(_))
+        ));
+    }
+
+    #[test]
+    fn wrong_key_type_pem_fails_boot() {
+        // A valid PEM that is not an Ed25519 PKCS#8 private key (here: an
+        // RSA public key from a different algorithm) must be rejected.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let private_path = dir.path().join(PRIVATE_KEY_FILE);
+        std::fs::write(
+            &private_path,
+            "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA\n-----END PUBLIC KEY-----\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            load_or_create_signing_key(dir.path()),
+            Err(AuthError::BadKeyMaterial(_))
+        ));
+    }
+
+    #[test]
+    fn unreadable_private_key_file_fails_boot() {
+        // Existing-but-unreadable key file: the NotFound branch must not
+        // fire (that would silently generate over it) — it must be a hard
+        // read error and a failed boot.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let private_path = dir.path().join(PRIVATE_KEY_FILE);
+        std::fs::write(&private_path, "pretend key").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&private_path, std::fs::Permissions::from_mode(0o000))
+                .unwrap();
+            let result = load_or_create_signing_key(dir.path());
+            assert!(matches!(result, Err(AuthError::BadKeyMaterial(_))));
+            // Restore so tempdir cleanup can delete it.
+            std::fs::set_permissions(&private_path, std::fs::Permissions::from_mode(0o644))
+                .unwrap();
+            let contents = std::fs::read_to_string(&private_path).unwrap();
+            assert_eq!(contents, "pretend key"); // not overwritten
+        }
+        #[cfg(not(unix))]
+        let _ = private_path; // Windows file ACLs can't be flipped this way
+    }
+
+    #[test]
+    fn uncreatable_keys_dir_fails_boot() {
+        // keys_dir points *inside a regular file*: create_dir_all must fail
+        // and the boot must abort, never fall back to unauthenticated.
+        let base = tempfile::tempdir().expect("tempdir");
+        let file_path = base.path().join("not-a-directory");
+        std::fs::write(&file_path, "blocker").unwrap();
+        let keys_dir = file_path.join("keys");
+
+        let result = load_or_create_signing_key(&keys_dir);
+        assert!(matches!(result, Err(AuthError::BadKeyMaterial(_))));
+        // The blocker file is untouched.
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "blocker");
     }
 
     #[test]
