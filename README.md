@@ -408,3 +408,34 @@ In rough order, each a self-contained change:
 The audit-ledger integration is deliberately absent from this list. The
 gateway's job is to log in an ingestable shape, not to know the ledger
 exists.
+
+## Numbers, with the environment attached
+
+Latency through the full proxied path — Ed25519 JWT verification, Redis
+fixed-window counter, breaker admission, HTTP round-trip to the mock CRM,
+response copy — measured with
+[oha](https://github.com/hatoo/oha) against the compose stack, closed-loop,
+HTTP/1.1, 30-second runs, temp limit raised so the rate limiter wasn't the
+subject under test (it was exercised separately and is honest: it 429'd
+284k unauthorized-ish requests in the first attempt at ~10k rps and kept
+serving).
+
+| Scenario | avg | p50 | p95 | p99 | notes |
+|---|---|---|---|---|---|
+| Proxied GET, auth + rate limit + breaker in path, 20 conn | 2.04 ms | 1.83 ms | 3.78 ms | 5.45 ms | ~315k req in 30s, zero errors |
+| Same, 100 connections (saturating) | 25.1 ms | 24.2 ms | 40.5 ms | 50.0 ms | ~80k req in 20s, zero errors — queueing, not failure |
+| `/healthz` (no auth, no Redis, no proxy hop) | 0.51 ms | 0.37 ms | 1.37 ms | 2.29 ms | gateway's own floor |
+| Direct to mock CRM, bypassing the gateway | 0.47 ms | 0.32 ms | 1.35 ms | 2.31 ms | what the proxy adds: ~1.5 ms at p50, ~3 ms at p99 |
+
+**Environment:** author's Windows 11 desktop, Docker Desktop with all four
+containers on one Linux VM, load generator (`oha` in a container, `--network
+host`) on the same machine. Nothing was isolated — the generator competes
+with the system under test for the same CPU. Treat these as "single laptop,
+everything co-located" numbers: the *relative* costs (proxy overhead vs
+direct, limiter vs no limiter) are the honest signal, the absolute
+milliseconds are not.
+
+To reproduce: `docker compose up -d --wait`, raise `limit` in
+`config.toml`, `docker compose restart gateway`, then run `oha` however you
+like. If your numbers differ, yours are the ones that matter for your
+hardware.
