@@ -24,9 +24,9 @@ use ratewall_core::config::Route;
 use ratewall_core::router::{build_router, ProxyState};
 use tower::ServiceExt;
 
-/// Backend whose behavior is controlled test-side. `fail_count` counts
-/// *successful* responses served, so tests can assert a dead backend is
-/// never contacted again.
+/// Backend whose behavior is controlled test-side: it can hang forever
+/// (exercising the per-request timeout) or serve, and it counts how many
+/// requests reached it so tests can assert an open circuit never does.
 #[derive(Clone)]
 struct ControllableBackend {
     mode: Arc<std::sync::Mutex<Mode>>,
@@ -35,9 +35,9 @@ struct ControllableBackend {
 }
 
 enum Mode {
-    /// Always respond 200 with the hit number.
+    /// Always respond 200.
     Ok,
-    /// Sleep forever (exercises the per-request timeout).
+    /// Sleep forever.
     Hang,
 }
 
@@ -56,7 +56,7 @@ impl ControllableBackend {
                 if hang {
                     std::future::pending::<()>().await;
                 }
-                format!("ok:{}", hits.load(Ordering::SeqCst)).into_response()
+                StatusCode::OK.into_response()
             }
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -156,9 +156,8 @@ async fn breaker_trips_then_fails_fast_then_recovers_via_probe() {
 
     // Wait out the cooldown: the next request becomes the half-open probe.
     tokio::time::sleep(Duration::from_millis(120)).await;
-    let (status, body) = get(&app, "/crm/probe").await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(body.starts_with("ok:"), "{body}");
+    let (status, _) = get(&app, "/crm/probe").await;
+    assert_eq!(status, StatusCode::OK);
 
     // Breaker closed: normal traffic resumes.
     let (status, _) = get(&app, "/crm/after").await;

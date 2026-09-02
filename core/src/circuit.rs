@@ -160,25 +160,19 @@ impl CircuitBreaker {
                     }
                 }
             }
-            // This call was the probe.
-            State::HalfOpen => {
-                if success {
-                    inner.state = State::Closed;
-                    inner.consecutive_failures = 0;
-                    inner.opened_at = None;
-                } else {
-                    self.open(&mut inner); // fresh cooldown
-                }
-            }
-            // An Open state with no probe in flight means record() raced a
-            // state transition (shouldn't happen: only admitted callers
-            // record). Reset to a consistent Closed on the principle that a
-            // breaker must never wedge shut without evidence.
-            State::Open => {
+            // This call was the probe: success closes, failure re-opens
+            // with a fresh cooldown. The Open arm is unreachable by
+            // construction — only an admitted caller (Closed, or the
+            // HalfOpen probe) ever records — and is deliberately a no-op
+            // rather than a state change, so a stray record can never
+            // silence a breaker that is open for a reason.
+            State::HalfOpen if success => {
                 inner.state = State::Closed;
                 inner.consecutive_failures = 0;
                 inner.opened_at = None;
             }
+            State::HalfOpen => self.open(&mut inner),
+            State::Open => {}
         }
     }
 
