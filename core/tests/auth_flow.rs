@@ -49,7 +49,7 @@ async fn spawn_mock_backend() -> String {
 }
 
 /// Mirror of the assembly in gateway/src/main.rs (own-keys mode).
-async fn build_app() -> (axum::Router, ed25519_dalek::SigningKey) {
+async fn build_app() -> axum::Router {
     let backend_url = spawn_mock_backend().await;
     let routes = vec![Route {
         prefix: "crm".into(),
@@ -66,9 +66,9 @@ async fn build_app() -> (axum::Router, ed25519_dalek::SigningKey) {
     let state = ProxyState::new(&routes)
         .expect("proxy state")
         .with_auth(auth_state);
-    let app = build_router(state).nest("/auth", auth_login::router(login_state));
-    let app = app.layer(from_fn(request_id_and_trace));
-    (app, signing_key)
+    build_router(state)
+        .nest("/auth", auth_login::router(login_state))
+        .layer(from_fn(request_id_and_trace))
 }
 
 async fn login(app: &axum::Router, body: &str) -> axum::http::Response<Body> {
@@ -93,7 +93,7 @@ async fn extract_token(response: axum::http::Response<Body>) -> String {
 
 #[tokio::test]
 async fn login_mint_proxy_flow() {
-    let (app, _key) = build_app().await;
+    let app = build_app().await;
 
     // 1. Proxied route without token → 401 (fail-closed).
     let response = app

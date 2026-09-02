@@ -128,8 +128,7 @@ mod tests {
             crate::auth::unix_now(),
         )
         .expect("issued token must verify");
-        assert_eq!(subject.subject, "demo");
-        let _ = state; // keep alive for Arc comparison clarity
+        assert_eq!(subject, "demo");
     }
 
     #[tokio::test]

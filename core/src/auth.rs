@@ -165,21 +165,15 @@ pub fn issue_token(
 
 // ── Token verification (fail-closed) ─────────────────────────────────────
 
-/// Outcome of a successful verification. The subject is what lands in logs
-/// and (in later phases) rate-limit keys.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AuthenticatedSubject {
-    pub subject: String,
-}
-
 /// Verify a compact JWS against `trusted_key`. **Fail-closed:** every failure
 /// mode is an `Err`; there is no code path that returns `Ok` on doubt.
+/// Returns the verified `sub` claim.
 pub fn verify_token(
     trusted_key: &VerifyingKey,
     token: &str,
     trusted_issuer: Option<&str>,
     now_unix: u64,
-) -> Result<AuthenticatedSubject, AuthError> {
+) -> Result<String, AuthError> {
     // 1. Shape: exactly three non-empty base64url segments.
     let mut parts = token.split('.');
     let (Some(header_b64), Some(claims_b64), Some(sig_b64), None) =
@@ -237,7 +231,7 @@ pub fn verify_token(
         .ok_or_else(|| AuthError::BadClaims("missing sub".into()))?
         .to_string();
 
-    Ok(AuthenticatedSubject { subject })
+    Ok(subject)
 }
 
 /// Current unix time in seconds. Separate helper so tests can pin time.
@@ -286,7 +280,7 @@ mod tests {
             1_700_000_000,
         )
         .expect("verify");
-        assert_eq!(verified.subject, "demo-user");
+        assert_eq!(verified, "demo-user");
     }
 
     #[test]
