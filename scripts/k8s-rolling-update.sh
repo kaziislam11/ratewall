@@ -54,7 +54,19 @@ TOKEN="$(curl -s -X POST "$BASE/auth/login" -H 'content-type: application/json' 
 AUTH="Authorization: Bearer $TOKEN"
 
 status() { curl -s -o /dev/null -w '%{http_code}' -H "$AUTH" "$@"; }
-[ "$(status "$BASE/crm/ping")" = "200" ] || fail "proxied request failed before rollout"
+# The demo's load loop may have just exhausted the 60s rate-limit window
+# for the shared demo subject, so the first ping can legitimately 429.
+# Wait (bounded past the window) for a 200; anything else is a real
+# failure. A 429 here is the limiter working, not the gateway being sick.
+PING_OK=""
+for _ in $(seq 1 35); do
+  case "$(status "$BASE/crm/ping")" in
+    200) PING_OK=1; break ;;
+    429) sleep 2 ;;
+    *) fail "proxied request failed before rollout" ;;
+  esac
+done
+[ -n "$PING_OK" ] || fail "no successful request before rollout (limiter window never freed)"
 
 echo "── rolling update under load ────────────────────"
 # The demo limiter allows 100 req/min per subject, and the load loop runs
