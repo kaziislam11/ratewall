@@ -108,4 +108,8 @@ process: reproduce in the environment CI actually has.
 4. **Push-to-see-if-CI-is-happy.** Runs 19/20 and 24–27 each burned a
    CI run on an assumption a two-minute local check in a fresh
    environment would have falsified. Local-first verification is the
-   cheapest test in the ladder.
+   cheapest test in the ladder. (This one is now a script: `just
+   fresh-check` reproduces both test environments with a disposable
+   Redis, and `just fresh-check --k8s` runs the k8s demos on a deleted-
+   and-recreated cluster — the exact check that would have caught the
+   namespace-before-Secret failure before it cost four red runs.)

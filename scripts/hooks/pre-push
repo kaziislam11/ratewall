@@ -9,6 +9,13 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
+# Optional heavier gate: RATEWALL_FRESH=1 also runs scripts/fresh-check.sh
+# (full suite in the CI image, with and without a disposable Redis) before
+# pushing. Off by default; see docs/notes/retrospective.md.
+if [ "${RATEWALL_FRESH:-0}" = "1" ]; then
+    bash scripts/fresh-check.sh
+fi
+
 echo "pre-push: fmt + clippy (--no-verify to skip)"
 
 if command -v cargo >/dev/null 2>&1; then

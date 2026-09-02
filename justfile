@@ -58,6 +58,11 @@ k8s-down:
 loadtest:
     bash scripts/load.sh
 
+# Fresh-environment check: full suite in the CI image with and without a
+# disposable Redis; add --k8s to also re-run the k8s demos on a cold cluster
+fresh-check *ARGS:
+    bash scripts/fresh-check.sh {{ARGS}}
+
 # Install the pre-push hook (fmt + clippy gate) for this clone
 install-hooks:
     git config core.hooksPath scripts/hooks

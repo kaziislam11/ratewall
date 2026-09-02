@@ -399,6 +399,14 @@ install-hooks` points git at `scripts/hooks`, and every `git push` then
 runs fmt + clippy first (skippable once with `git push --no-verify`;
 CI remains the real gate for tests).)
 
+For the full pre-push treatment, `just fresh-check` runs the entire test
+suite in the exact CI image twice — with a disposable Redis and with none,
+the two environments the tests pin — and `just fresh-check --k8s` also
+deletes and recreates the kind cluster before re-running both k8s demos.
+That last one exists because four CI runs failed on "works locally with a
+dirty cluster, fails on a fresh one"; `RATEWALL_FRESH=1 git push` runs the
+default mode from the pre-push hook.
+
 ## Project layout
 
 ```
