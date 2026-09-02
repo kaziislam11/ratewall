@@ -1,0 +1,31 @@
+# The gateway's route table, rate-limit and breaker settings — the same
+# shape as the compose config.toml, with backends reached by in-cluster
+# Service DNS names. Config is data, not secrets: the signing key lives in
+# the gateway-keys Secret, not here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+  namespace: ratewall
+  labels:
+    app: gateway
+data:
+  config.toml: |
+    port = 8080
+
+    [routes]
+    crm = "http://crm:3000"
+    hrm = "http://hrm:3001"
+
+    # Fail-open (ADR-0001/0005): an unreachable Redis degrades enforcement,
+    # never availability — which is why Redis's own probes pulling it out
+    # must not take the gateway down.
+    [ratelimit]
+    redis_url = "redis://redis:6379"
+    limit = 100
+    window_secs = 60
+
+    [breaker]
+    failure_threshold = 5
+    cooldown_secs = 30
+    timeout_secs = 15

@@ -1,0 +1,12 @@
+# kind cluster shape for the ratewall demo. The NodePort mapping is what
+# makes the gateway reachable from the host at a fixed port (31080) without
+# kubectl port-forward, so the demo scripts (and the load generator) can
+# just curl localhost:31080.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 31080
+        hostPort: 31080
+        protocol: TCP

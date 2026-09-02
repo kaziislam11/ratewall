@@ -1,0 +1,77 @@
+# ratewall gateway: 3 replicas behind one Service, with the probe wiring
+# that makes Kubernetes' checks mean something (ADR-0007):
+#
+#   - readiness  -> /readyz  200 only while every breaker is closed AND
+#                Redis answers PING; a sick component pulls the pod out of
+#                endpoints without restarting it.
+#   - liveness   -> /healthz a dumb 200 while the process can serve at all;
+#                restarting is the right response only to process death.
+#
+# Tokens: every replica mounts the same signing key (keys Secret), so a
+# token minted by one replica verifies on all others and survives pod
+# churn. First-boot key generation is a single-replica pattern; it would
+# silently break here (each replica would mint its own key). See ADR-0007
+# for the trade and the external-issuer escape hatch.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: ratewall
+  labels:
+    app: gateway
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      containers:
+        - name: gateway
+          image: ratewall-gateway:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          volumeMounts:
+            - name: config
+              mountPath: /etc/ratewall
+              readOnly: true
+            - name: keys
+              mountPath: /var/lib/ratewall/keys
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: gateway-config
+        - name: keys
+          secret:
+            secretName: gateway-keys
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: ratewall
+  labels:
+    app: gateway
+spec:
+  selector:
+    app: gateway
+  ports:
+    - port: 8080
+      targetPort: http

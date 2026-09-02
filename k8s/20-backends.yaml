@@ -1,0 +1,99 @@
+# Mock backends standing in for the CRM and HRM services — the same echo
+# stubs the compose demo uses. One shared image, different commands. Swap
+# these for the real services by pointing the gateway's route table at
+# them; nothing else changes.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crm
+  namespace: ratewall
+  labels:
+    app: crm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crm
+  template:
+    metadata:
+      labels:
+        app: crm
+    spec:
+      containers:
+        - name: crm
+          image: ratewall-mocks:latest
+          imagePullPolicy: IfNotPresent
+          command: ["mock-crm"]
+          ports:
+            - containerPort: 3000
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: crm
+  namespace: ratewall
+  labels:
+    app: crm
+spec:
+  selector:
+    app: crm
+  ports:
+    - port: 3000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hrm
+  namespace: ratewall
+  labels:
+    app: hrm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hrm
+  template:
+    metadata:
+      labels:
+        app: hrm
+    spec:
+      containers:
+        - name: hrm
+          image: ratewall-mocks:latest
+          imagePullPolicy: IfNotPresent
+          command: ["mock-hrm"]
+          ports:
+            - containerPort: 3001
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hrm
+  namespace: ratewall
+  labels:
+    app: hrm
+spec:
+  selector:
+    app: hrm
+  ports:
+    - port: 3001
+      targetPort: http

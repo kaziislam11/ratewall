@@ -60,3 +60,34 @@ jobs:
       - name: Debug — gateway logs
         if: failure()
         run: docker compose logs gateway | tail -100
+
+  # Phase 7 on real infrastructure: the kind cluster proves the k8s
+  # manifests, the /readyz-wired probes, and the kill-a-pod guarantee on
+  # every push. Reuses the images the compose job builds... which this job
+  # builds itself (jobs don't share state): two builds is the price of a
+  # meaningful, self-contained proof.
+  kind-smoke:
+    runs-on: ubuntu-latest
+    needs: build-test
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kind
+        run: |
+          curl -sSL -o kind https://kind.sigs.k8s.io/dl/v0.29.0/kind-linux-amd64
+          chmod +x kind
+          sudo mv kind /usr/local/bin/kind
+
+      - name: Kill-a-pod demo (deploys the full stack)
+        run: bash scripts/k8s-demo.sh
+
+      - name: Rolling-update demo (zero dropped requests)
+        run: bash scripts/k8s-rolling-update.sh
+
+      - name: Debug — cluster state
+        if: failure()
+        run: |
+          kubectl get pods -A
+          kubectl get events -n ratewall --sort-by=.lastTimestamp | tail -30
+          kubectl logs -n ratewall -l app=gateway --tail=50 --prefix

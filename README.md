@@ -286,6 +286,34 @@ just chaos
 just chaos-backend
 ```
 
+### On Kubernetes (kind)
+
+The same stack runs on a local kind cluster — 3 gateway replicas behind
+one Service, with the probes wired to mean something: readiness on
+`/readyz` (real component health: breakers + Redis), liveness on
+`/healthz` (process can serve). All replicas share one signing key
+(Secret), so a token minted by any replica verifies on all of them
+(ADR-0007).
+
+```bash
+# One-shot demo: creates the cluster, builds + loads the images, deploys,
+# kills a gateway pod mid-load, and asserts zero failed requests while
+# the Deployment replaces it.
+just k8s-demo
+
+# Rolling update under load: bumps the gateway image tag, asserts zero
+# dropped requests across the rollout.
+just k8s-rolling-update
+
+# When you're done:
+just k8s-down
+```
+
+Requires docker, kind, kubectl, and curl. The gateway is reachable at
+`localhost:31080` (a NodePort mapped out of the kind node); the same
+`/auth/login`, `/crm/*`, `/readyz` surface applies. Both demos also run
+in CI on every push, so the manifests can't rot.
+
 ### Building just the binary
 
 If you have a Rust toolchain (1.88+; older versions fail on a transitive
@@ -377,6 +405,8 @@ CI remains the real gate for tests).)
 gateway/            binary: config loading, logging, server bootstrap (thin on purpose)
 core/               library: config, router, middleware — the actual engine
 mock-backends/      two tiny axum echo services standing in for CRM/HRM
+k8s/                kind manifests: gateway ×3, Redis, mock backends, probes
+scripts/            smoke, chaos, load, and kind demo scripts (see justfile)
 docs/adr/           architecture decision records — the "why" behind the constraints
 config.toml         demo configuration, mounted into the gateway container
 ```
@@ -403,11 +433,11 @@ Shipped:
   every push in CI, not just on demand.
 - **Load testing** — honest, environment-labeled p99 latency numbers (see
   the Numbers section).
-
-In rough order, each a self-contained change:
-
-1. **Kubernetes** — kind manifests with readiness probes wired to real
-   health, plus a scripted kill-a-pod-under-load demo.
+- **Kubernetes** — kind manifests with the readiness probe wired to real
+  health (`/readyz`) and liveness to `/healthz`; 3 replicas sharing one
+  signing key; scripted kill-a-pod-under-load and zero-dropped-requests
+  rolling-update demos (`just k8s-demo`, `just k8s-rolling-update`),
+  asserted on every push in a kind CI job.
 
 The audit-ledger integration is deliberately absent from this list. The
 gateway's job is to log in an ingestable shape, not to know the ledger

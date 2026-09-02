@@ -42,6 +42,18 @@ smoke:
 chaos-backend:
     bash scripts/chaos-backend.sh
 
+# Kind demo: deploy to a local cluster, kill a gateway pod under load
+k8s-demo:
+    bash scripts/k8s-demo.sh
+
+# Kind demo: rolling gateway update under load, zero dropped requests
+k8s-rolling-update:
+    bash scripts/k8s-rolling-update.sh
+
+# Delete the kind cluster the demos created
+k8s-down:
+    kind delete cluster --name ratewall
+
 # Load test: regenerate the latency numbers (see bench/baseline.md)
 loadtest:
     bash scripts/load.sh
