@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use axum::response::IntoResponse;
 use ratewall_core::auth::DEFAULT_TOKEN_TTL;
 use ratewall_core::auth_login::LoginState;
 use ratewall_core::circuit::{BreakerConfig, Breakers};
@@ -54,8 +55,6 @@ impl TestBackend {
     }
 }
 
-use axum::response::IntoResponse;
-
 async fn build_app(
     backend: &str,
     rl: RateLimitConfig,
@@ -100,13 +99,13 @@ async fn build_app(
 }
 
 /// Redis URL for the limiter. Points at a dead local port by default
-/// (fail-open means the flow tests still behave deterministically); when
-/// RATEWALL_TEST_REDIS is set, a real Redis is used so the 429 path is
-/// exercised against the actual counter. A per-test prefix key namespace
-/// keeps runs isolated.
+/// (fail-open makes every behavior deterministic without one); when
+/// RATEWALL_TEST_REDIS is set, a real Redis backs the 429 path.
 fn dead_or_real_redis() -> String {
     std::env::var("RATEWALL_TEST_REDIS").unwrap_or_else(|_| "redis://127.0.0.1:1".into())
 }
+
+const NEVER: &str = "http://127.0.0.1:1"; // port 1 refuses connections
 
 /// Unique per-run limiter key namespace so re-execution never inherits a
 /// full window from a previous run (and never collides with the live
@@ -286,12 +285,8 @@ async fn rate_limit_rejections_are_counted() {
 #[tokio::test]
 async fn circuit_open_short_circuits_are_counted_and_gauged() {
     // Dead backend (connection refused): threshold 3 → 502s, then 503s.
-    let (app, _metrics) = build_app(
-        "http://127.0.0.1:1",
-        rl_config(&dead_or_real_redis(), 100),
-        &run_marker(),
-    )
-    .await;
+    let (app, _metrics) =
+        build_app(NEVER, rl_config(&dead_or_real_redis(), 100), &run_marker()).await;
     let token = login(&app).await;
 
     for _ in 0..3 {

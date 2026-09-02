@@ -66,7 +66,10 @@ impl Histogram {
     }
 }
 
-pub const LATENCY_BUCKETS: &[f64] = &[
+/// Latency buckets in seconds: a Prometheus-conventional spread covering
+/// the measured distribution (p50 ~2ms, p99 ~5ms on the reference laptop)
+/// with headroom for saturated operation.
+const LATENCY_BUCKETS: &[f64] = &[
     0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5,
 ];
 
@@ -119,6 +122,7 @@ impl RequestTimer {
 }
 
 impl Metrics {
+    /// One instance per process; clonable handles share the registry.
     pub fn new() -> Self {
         Self::default()
     }
