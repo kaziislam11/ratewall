@@ -11,8 +11,8 @@ every option was either a full service-mesh migration or a bash script
 behind nginx. This is the middle ground: one binary, one config file, and
 behavior that is explicit about how it fails.
 
-The demo stack runs with zero external dependencies — no API keys, no sign
-ups, no cloud accounts:
+The demo stack runs with zero external dependencies: no API keys, no sign
+ups, no cloud accounts.
 
 ```bash
 docker compose up --build -d
@@ -52,9 +52,9 @@ no route for prefix "nope"
 ```
 
 If a backend is unreachable, the gateway returns a fast 502 rather than
-hanging — it does not retry, and it does not queue. After enough consecutive
+hanging. It does not retry, and it does not queue. After enough consecutive
 failures (default 5), that backend's **circuit breaker opens** and requests
-fail fast with 503 — the dead backend isn't contacted at all. After a
+fail fast with 503, so the dead backend isn't contacted at all. After a
 cooldown (default 30s), one probe request decides whether the circuit
 closes again. Details and the reasoning live in
 [ADR-0006](docs/adr/0006-circuit-breakers-and-readyz.md). Only transport
@@ -80,15 +80,15 @@ request{request_id=0b6f... method=GET path=/crm/t}
 
 Route, status, and latency are in there deliberately. The point is that
 this log shape is exactly what the audit-ledger project wants to ingest
-later — the gateway never calls the ledger directly, it just logs in a
-shape that can be piped anywhere.
+later. The gateway never calls the ledger directly, it just logs in a shape
+that can be piped anywhere.
 
 ### Startup config validation
 
 The gateway validates its entire config once, at boot, and exits non-zero
 on any problem: missing file, malformed TOML, a key it doesn't recognize, an
 empty route table, a prefix containing a slash, a backend that isn't an
-absolute http(s) URL. Unknown keys are errors, not warnings — a typo like
+absolute http(s) URL. Unknown keys are errors, not warnings. A typo like
 `ratelimit` instead of `rate_limit` should not silently disable a feature
 you thought you'd configured. The reasoning is written up in
 [ADR-0003](docs/adr/0003-config-validated-at-startup.md).
@@ -98,7 +98,7 @@ running, every route in its table is well-formed, and any error you see
 after boot is a runtime event (backend down, backend slow), not a config
 bug.
 
-## Constraints — the deliberate kind
+## Constraints: the deliberate kind
 
 These are design decisions, not missing features. Each is written down as
 an [ADR](docs/adr/) because I will forget why.
@@ -119,7 +119,7 @@ chaos-backend` kills a mock backend and proves the breaker trips, fails
 fast, and self-heals. Both run in CI on every push.
 
 **The engine is a library; the binary is a shell** ([ADR-0002](docs/adr/0002-core-lib-gateway-bin-split.md)).
-Routing, middleware, config — all of it lives in `ratewall-core`. The
+Routing, middleware, config, all of it lives in `ratewall-core`. The
 `gateway` binary only loads config, sets up logging, and starts the server.
 Integration tests import the library and drive the whole app in-process,
 which makes them fast and deterministic. If you find business logic in
@@ -149,11 +149,11 @@ the only unauthenticated paths.
 
 On first boot the gateway generates an Ed25519 keypair, stores it on the
 `gateway-keys` volume (private key mode 0600), and reuses it on every
-restart — so issued tokens survive restarts and image rebuilds.
+restart, so issued tokens survive restarts and image rebuilds.
 
 ```bash
 # 1. Mint a token (demo credentials, documented on purpose).
-#    Tokens live 15 minutes — after that, log in again:
+#    Tokens live 15 minutes. After that, log in again:
 TOKEN=$(curl -s -X POST -H 'content-type: application/json' \
   -d '{"username":"demo","password":"demo-password"}' \
   http://localhost:8080/auth/login | sed 's/.*"token":"\([^"]*\)".*/\1/')
@@ -165,13 +165,13 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/crm/customers/42
 
 Tokens are compact JWS with `alg: EdDSA` (RFC 8037), claims `sub`, `iss`,
 `iat`, `exp`, and a 15-minute lifetime (configurable via
-`[auth] token_ttl_secs`). Verification is **fail-closed**: any error —
-malformed header, wrong algorithm (including the classic `alg: none`
-attack), bad signature, expired, wrong issuer — is a 401.
+`[auth] token_ttl_secs`). Verification is **fail-closed**: any error
+(malformed header, wrong algorithm, the classic `alg: none` attack, bad
+signature, expired, wrong issuer) is a 401.
 
 Every 401 body is deliberately identical (`missing or malformed bearer
-token` for a bad/absent header, `invalid token` for everything else) —
-the gateway never tells an unauthenticated caller *why* it said no. The
+token` for a bad/absent header, `invalid token` for everything else); the
+gateway never tells an unauthenticated caller *why* it said no. The
 specific reason (`signature verification failed`, `token expired`, …) goes
 to the gateway log on the same line as the request id, so if your own
 token gets rejected, grab the `x-request-id` from the response and check
@@ -183,7 +183,7 @@ request{request_id=… method=GET path=/crm/x}: request rejected by auth err=tok
 
 To trust an external identity provider instead (Supabase et al.), set the
 `[auth]` section with `issuer` + `issuer_public_key_pem` (an Ed25519 public
-key in PEM). The demo login endpoint then disables itself — the gateway
+key in PEM). The demo login endpoint then disables itself; the gateway
 only verifies, it never issues.
 
 ```toml
@@ -194,15 +194,15 @@ issuer_public_key_pem = "/keys/idp-public.pem"
 ```
 
 This is a demo issuer, not an identity provider. The demo credential is
-published here on purpose — the point is that `docker compose up` works
+published here on purpose: the point is that `docker compose up` works
 with zero setup. Don't use the demo credentials anywhere real.
 
 Also worth knowing: `/auth/login` is **unthrottled** today. That's fine
 while the credential is the published demo pair, but the moment a real
-credential store sits behind it — or an external issuer's endpoints are
+credential store sits behind it, or an external issuer's endpoints are
 reachable through a rate-limited route without the login route being
-limited too — it becomes a brute-force target and needs the limiter
-wired in front of it. (Proxied routes *are* rate-limited — see
+limited too, it becomes a brute-force target and needs the limiter
+wired in front of it. (Proxied routes *are* rate-limited, see
 [ADR-0005](docs/adr/0005-rate-limiting-fail-open.md).)
 
 - **Not battle-tested as a security boundary.** This is a young project.
@@ -228,7 +228,7 @@ wired in front of it. (Proxied routes *are* rate-limited — see
 One `reqwest::Client` is shared across all proxied requests, with a
 per-request timeout from `[breaker].timeout_secs`. Hop-by-hop headers are
 stripped before forwarding. The route table is a plain `BTreeMap` resolved
-on the request path — there is no route registration magic; what you see in
+on the request path; there is no route registration magic. What you see in
 `config.toml` is the entire routing surface.
 
 ## Running it
@@ -277,19 +277,19 @@ curl -i http://localhost:8080/readyz
 # histograms, 429s, circuit-open 503s, live breaker state
 curl http://localhost:8080/metrics
 
-# Chaos: kill Redis mid-load — traffic keeps flowing (fail-open),
+# Chaos: kill Redis mid-load. Traffic keeps flowing (fail-open);
 # enforcement resumes when it comes back. Gateway never restarts.
 just chaos
 
-# Chaos: kill the CRM mock — 502s, then fast 503s once the breaker
+# Chaos: kill the CRM mock. 502s first, then fast 503s once the breaker
 # opens, then self-heals when CRM comes back. Gateway never restarts.
 just chaos-backend
 ```
 
 ### On Kubernetes (kind)
 
-The same stack runs on a local kind cluster — 3 gateway replicas behind
-one Service, with the probes wired to mean something: readiness on
+The same stack runs on a local kind cluster: 3 gateway replicas behind
+one Service, with the probes wired to mean something. Readiness on
 `/readyz` (real component health: breakers + Redis), liveness on
 `/healthz` (process can serve). All replicas share one signing key
 (Secret), so a token minted by any replica verifies on all of them
@@ -344,7 +344,7 @@ hrm = "http://hrm:3001"
 # Optional. Omit the whole section to run in own-keys demo mode (the
 # gateway generates its signing keypair and serves POST /auth/login).
 [auth]
-# External-issuer mode — issuer and key must be set together, and doing
+# External-issuer mode: issuer and key must be set together, and doing
 # so disables the demo login endpoint:
 # issuer = "https://your-idp.example"
 # issuer_public_key_pem = "/keys/idp-public.pem"
@@ -363,7 +363,7 @@ remount your own file) to reconfigure without touching the image.
 
 ```bash
 just build    # cargo build --workspace
-just test     # unit + integration tests (40 across config/router/middleware/auth)
+just test     # unit + integration tests
 just lint     # rustfmt --check + clippy with -D warnings
 just up       # docker compose up --build -d
 just logs     # tail gateway logs
@@ -373,7 +373,7 @@ just down     # tear the stack down
 CI runs fmt, clippy, build, and the full test suite on every push. The
 tests worth knowing about:
 
-- **Config validation tests** cover each rejection path — malformed TOML,
+- **Config validation tests** cover each rejection path: malformed TOML,
   unknown keys, slash-containing prefixes, non-http backends, empty tables.
 - **Router integration tests** spawn a real mock backend in-process on an
   ephemeral port and drive the full axum stack with `tower::ServiceExt::
@@ -394,28 +394,28 @@ docker run --rm -v "$PWD":/build -w /build rust:1.88-slim \
 
 (That command exists because the author's machine had Docker but no Rust
 toolchain, and "CI will catch it" turned out to mean "four failed runs
-later". Run it before pushing — or let the hook do it: `just
+later". Run it before pushing, or let the hook do it: `just
 install-hooks` points git at `scripts/hooks`, and every `git push` then
 runs fmt + clippy first (skippable once with `git push --no-verify`;
 CI remains the real gate for tests).)
 
 For the full pre-push treatment, `just fresh-check` runs the entire test
-suite in the exact CI image twice — with a disposable Redis and with none,
-the two environments the tests pin — and `just fresh-check --k8s` also
-deletes and recreates the kind cluster before re-running both k8s demos.
-That last one exists because four CI runs failed on "works locally with a
-dirty cluster, fails on a fresh one"; `RATEWALL_FRESH=1 git push` runs the
-default mode from the pre-push hook.
+suite in the exact CI image twice (once with a disposable Redis, once with
+none: the two environments the tests pin), and `just fresh-check --k8s`
+also deletes and recreates the kind cluster before re-running both k8s
+demos. That last one exists because four CI runs failed on "works locally
+with a dirty cluster, fails on a fresh one". `RATEWALL_FRESH=1 git push`
+runs the default mode from the pre-push hook.
 
 ## Project layout
 
 ```
 gateway/            binary: config loading, logging, server bootstrap (thin on purpose)
-core/               library: config, router, middleware — the actual engine
+core/               library: config, router, middleware. The actual engine
 mock-backends/      two tiny axum echo services standing in for CRM/HRM
 k8s/                kind manifests: gateway ×3, Redis, mock backends, probes
 scripts/            smoke, chaos, load, and kind demo scripts (see justfile)
-docs/adr/           architecture decision records — the "why" behind the constraints
+docs/adr/           architecture decision records: the why behind the constraints
 docs/notes/         notes worth keeping: the project retrospective lives here
 CHANGELOG.md        notable changes per version, Keep a Changelog format
 config.toml         demo configuration, mounted into the gateway container
@@ -425,25 +425,25 @@ config.toml         demo configuration, mounted into the gateway container
 
 Shipped:
 
-- **Auth** — Ed25519 JWT verification, fail-closed; a demo login
-  endpoint so the stack is usable with zero setup; config hooks to trust
-  an external issuer's public key later.
-- **Rate limiting** — Redis-backed, fail-open, keyed by subject then
-  IP, with the mandatory kill-Redis-under-load test (`just chaos`).
-- **Circuit breakers** — per backend, not global, so a slow CRM
-  doesn't degrade HRM traffic; half-open probes for self-healing;
-  `/readyz` reflecting real backend and Redis health. Kill-a-backend
-  chaos (`just chaos-backend`) runs in CI on every push.
-- **Metrics** — `/metrics` in the Prometheus text format: request counts
-  and latency histograms per route, status-class responses, rate-limit
-  rejections, and live breaker state. Zero dependencies — the registry is
-  hand-rolled because two counters and a histogram don't justify a client
-  library.
-- **Testing at the edges** — smoke + both chaos scripts asserted on
+- **Auth**: Ed25519 JWT verification, fail-closed. A demo login endpoint
+  so the stack is usable with zero setup, plus config hooks to trust an
+  external issuer's public key later.
+- **Rate limiting**: Redis-backed, fail-open, keyed by subject then IP,
+  with the mandatory kill-Redis-under-load test (`just chaos`).
+- **Circuit breakers**: per backend, not global, so a slow CRM doesn't
+  degrade HRM traffic; half-open probes for self-healing; `/readyz`
+  reflecting real backend and Redis health. Kill-a-backend chaos
+  (`just chaos-backend`) runs in CI on every push.
+- **Metrics**: `/metrics` in the Prometheus text format with request
+  counts and latency histograms per route, status-class responses,
+  rate-limit rejections, and live breaker state. Zero dependencies; the
+  registry is hand-rolled because two counters and a histogram don't
+  justify a client library.
+- **Testing at the edges**: smoke + both chaos scripts asserted on
   every push in CI, not just on demand.
-- **Load testing** — honest, environment-labeled p99 latency numbers (see
+- **Load testing**: honest, environment-labeled p99 latency numbers (see
   the Numbers section).
-- **Kubernetes** — kind manifests with the readiness probe wired to real
+- **Kubernetes**: kind manifests with the readiness probe wired to real
   health (`/readyz`) and liveness to `/healthz`; 3 replicas sharing one
   signing key; scripted kill-a-pod-under-load and zero-dropped-requests
   rolling-update demos (`just k8s-demo`, `just k8s-rolling-update`),
@@ -455,9 +455,9 @@ exists.
 
 ## Numbers, with the environment attached
 
-Latency through the full proxied path — Ed25519 JWT verification, Redis
+Latency through the full proxied path (Ed25519 JWT verification, Redis
 fixed-window counter, breaker admission, HTTP round-trip to the mock CRM,
-response copy — measured with
+response copy), measured with
 [oha](https://github.com/hatoo/oha) against the compose stack, closed-loop,
 HTTP/1.1, 30-second runs, temp limit raised so the rate limiter wasn't the
 subject under test (it was exercised separately and is honest: it 429'd
@@ -467,19 +467,19 @@ serving).
 | Scenario | avg | p50 | p95 | p99 | notes |
 |---|---|---|---|---|---|
 | Proxied GET, auth + rate limit + breaker in path, 20 conn | 2.04 ms | 1.83 ms | 3.78 ms | 5.45 ms | ~315k req in 30s, zero errors |
-| Same, 100 connections (saturating) | 25.1 ms | 24.2 ms | 40.5 ms | 50.0 ms | ~80k req in 20s, zero errors — queueing, not failure |
+| Same, 100 connections (saturating) | 25.1 ms | 24.2 ms | 40.5 ms | 50.0 ms | ~80k req in 20s, zero errors (queueing, not failure) |
 | `/healthz` (no auth, no Redis, no proxy hop) | 0.51 ms | 0.37 ms | 1.37 ms | 2.29 ms | gateway's own floor |
 | Direct to mock CRM, bypassing the gateway | 0.47 ms | 0.32 ms | 1.35 ms | 2.31 ms | what the proxy adds: ~1.5 ms at p50, ~3 ms at p99 |
 
 **Environment:** author's Windows 11 desktop, Docker Desktop with all four
 containers on one Linux VM, load generator (`oha` in a container, `--network
-host`) on the same machine. Nothing was isolated — the generator competes
+host`) on the same machine. Nothing was isolated; the generator competes
 with the system under test for the same CPU. Treat these as "single laptop,
 everything co-located" numbers: the *relative* costs (proxy overhead vs
 direct, limiter vs no limiter) are the honest signal, the absolute
 milliseconds are not.
 
-To reproduce: `just loadtest` (or `bash scripts/load.sh`) — it raises the
+To reproduce: `just loadtest` (or `bash scripts/load.sh`). It raises the
 rate limit for the run, restores it afterwards, and prints the table; the
 committed baseline lives in
 [bench/baseline.md](bench/baseline.md). If your numbers differ, yours are
