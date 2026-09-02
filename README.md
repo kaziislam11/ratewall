@@ -52,8 +52,14 @@ no route for prefix "nope"
 ```
 
 If a backend is unreachable, the gateway returns a fast 502 rather than
-hanging — it does not retry, and it does not queue. (Circuit breakers that
-make this smarter are on the roadmap, not in the code yet.)
+hanging — it does not retry, and it does not queue. After enough consecutive
+failures (default 5), that backend's **circuit breaker opens** and requests
+fail fast with 503 — the dead backend isn't contacted at all. After a
+cooldown (default 30s), one probe request decides whether the circuit
+closes again. Details and the reasoning live in
+[ADR-0006](docs/adr/0006-circuit-breakers-and-readyz.md). Only transport
+failures (refused connections, timeouts) trip the breaker; a backend
+answering with HTTP errors is a backend that's up.
 
 ### Request IDs
 
@@ -108,7 +114,9 @@ can't drift into whichever behavior was easier that week. The limiter is
 implemented exactly that way ([ADR-0005](docs/adr/0005-rate-limiting-fail-open.md)):
 fixed-window counters in Redis, `429` + `Retry-After` when the cap is hit,
 and a pass-through (logged at WARN) when Redis is down. `just chaos` kills
-the Redis container under load and proves traffic keeps flowing.
+the Redis container under load and proves traffic keeps flowing; `just
+chaos-backend` kills a mock backend and proves the breaker trips, fails
+fast, and self-heals. Both run in CI on every push.
 
 **The engine is a library; the binary is a shell** ([ADR-0002](docs/adr/0002-core-lib-gateway-bin-split.md)).
 Routing, middleware, config — all of it lives in `ratewall-core`. The
@@ -197,11 +205,10 @@ limited too — it becomes a brute-force target and needs the limiter
 wired in front of it. (Proxied routes *are* rate-limited — see
 [ADR-0005](docs/adr/0005-rate-limiting-fail-open.md).)
 
-- **No circuit breakers.** A dead backend currently produces a 502 per
-  request. Per-backend breakers with half-open probes are planned so one
-  slow service can't degrade traffic to the others.
-- **No metrics endpoint.** `/healthz` exists; `/readyz` and `/metrics`
-  (Prometheus format) don't yet.
+- **No metrics endpoint.** `/healthz` and `/readyz` exist (`/readyz` reports
+  real component health — backend breaker state and Redis PING — not just
+  "process is alive", see [ADR-0006](docs/adr/0006-circuit-breakers-and-readyz.md));
+  `/metrics` (Prometheus format) doesn't yet.
 - **Not battle-tested as a security boundary.** This is a young project.
   Do not put it on the public internet in front of anything you care about
   and walk away.
@@ -213,18 +220,20 @@ wired in front of it. (Proxied routes *are* rate-limited — see
  clients         │  axum router                                             │   backends
  ────────        │   ├─ request-id middleware (UUID, or caller-supplied)    │   ─────────
  browsers ──────▶│   ├─ prefix router (/crm/*, /hrm/*) ─────────────────────┼──▶ CRM  (:3000)
- mobile/API      │   ├─ structured request log (tracing)                    │───▶ HRM  (:3001)
-                 │   └─ /healthz                                            │
+ mobile/API      │   ├─ per-backend circuit breakers (open → fast 503)      │───▶ HRM  (:3001)
+                 │   ├─ structured request log (tracing)                    │
+                 │   └─ /healthz · /readyz (real component health)          │
                  └──────────────────────────────────────────────────────────┘
                                         │
                                      Redis
-                          (reserved for rate-limit state — unused yet)
+                          (rate-limit counters; PINGed by /readyz)
 ```
 
-One `reqwest::Client` is shared across all proxied requests. Hop-by-hop
-headers are stripped before forwarding. The route table is a plain
-`BTreeMap` resolved on the request path — there is no route registration
-magic; what you see in `config.toml` is the entire routing surface.
+One `reqwest::Client` is shared across all proxied requests, with a
+per-request timeout from `[breaker].timeout_secs`. Hop-by-hop headers are
+stripped before forwarding. The route table is a plain `BTreeMap` resolved
+on the request path — there is no route registration magic; what you see in
+`config.toml` is the entire routing surface.
 
 ## Running it
 
@@ -241,11 +250,11 @@ Four containers come up, all with healthchecks:
 | gateway | 8080 | this repo's binary |
 | crm | 3000 | mock backend echoing `{"service":"crm","path":...}` |
 | hrm | 3001 | mock backend echoing `{"service":"hrm","path":...}` |
-| redis | 6379 | reserved for the rate limiter |
+| redis | 6379 | rate-limit counters (fail-open); PINGed by `/readyz` |
 
 The mock backends accept every HTTP method and echo the request path, which
 is enough to prove the gateway's routing round-trips without needing the
-real services. Redis isn't contacted by anything yet.
+real services.
 
 Some things to try:
 

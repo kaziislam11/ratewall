@@ -29,6 +29,10 @@ pub struct GatewayConfig {
     /// subject (or IP when unauthenticated).
     #[serde(default)]
     pub ratelimit: RateLimitConfig,
+    /// Circuit breakers from `[breaker]`. Defaults to 5 consecutive
+    /// transport failures opening a backend for a 30s cooldown.
+    #[serde(default)]
+    pub breaker: BreakerConfig,
 }
 
 fn default_port() -> u16 {
@@ -45,6 +49,50 @@ fn default_rl_limit() -> u32 {
 
 fn default_rl_window_secs() -> u64 {
     60
+}
+
+fn default_breaker_failure_threshold() -> u32 {
+    5
+}
+
+fn default_breaker_cooldown_secs() -> u64 {
+    30
+}
+
+fn default_breaker_timeout_secs() -> u64 {
+    15
+}
+
+/// Circuit-breaker configuration (Phase 4).
+///
+/// One breaker per configured backend, all sharing these thresholds. Only
+/// transport failures count toward `failure_threshold`; HTTP error statuses
+/// are the backend answering and never trip anything.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BreakerConfig {
+    /// Consecutive transport failures that open a backend's breaker.
+    #[serde(default = "default_breaker_failure_threshold")]
+    pub failure_threshold: u32,
+    /// Seconds an open breaker waits before allowing one probe request.
+    #[serde(default = "default_breaker_cooldown_secs")]
+    pub cooldown_secs: u64,
+    /// Per-request timeout applied to backend calls (secs). A timeout is a
+    /// transport failure: it counts toward the threshold.
+    #[serde(default = "default_breaker_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+// Manual impl, same reasoning as `AuthConfig`: a derived Default would
+// yield zeros when the whole `[breaker]` section is absent.
+impl Default for BreakerConfig {
+    fn default() -> Self {
+        Self {
+            failure_threshold: default_breaker_failure_threshold(),
+            cooldown_secs: default_breaker_cooldown_secs(),
+            timeout_secs: default_breaker_timeout_secs(),
+        }
+    }
 }
 
 /// Auth configuration (Phase 2).
@@ -155,6 +203,8 @@ pub enum ConfigError {
     InvalidAuth(String),
     /// The `[ratelimit]` section has unusable values.
     InvalidRateLimit(String),
+    /// The `[breaker]` section has unusable values.
+    InvalidBreaker(String),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -175,6 +225,7 @@ impl std::fmt::Display for ConfigError {
             }
             ConfigError::InvalidAuth(msg) => write!(f, "invalid [auth] config: {msg}"),
             ConfigError::InvalidRateLimit(msg) => write!(f, "invalid [ratelimit] config: {msg}"),
+            ConfigError::InvalidBreaker(msg) => write!(f, "invalid [breaker] config: {msg}"),
         }
     }
 }
@@ -230,6 +281,21 @@ impl GatewayConfig {
                 "redis_url must not be empty".into(),
             ));
         }
+        if self.breaker.failure_threshold == 0 {
+            return Err(ConfigError::InvalidBreaker(
+                "failure_threshold must be at least 1".into(),
+            ));
+        }
+        if self.breaker.cooldown_secs == 0 {
+            return Err(ConfigError::InvalidBreaker(
+                "cooldown_secs must be at least 1".into(),
+            ));
+        }
+        if self.breaker.timeout_secs == 0 {
+            return Err(ConfigError::InvalidBreaker(
+                "timeout_secs must be at least 1".into(),
+            ));
+        }
         let mut routes = Vec::with_capacity(self.routes.len());
         for (prefix, backend) in &self.routes {
             if prefix.is_empty()
@@ -254,11 +320,10 @@ impl GatewayConfig {
         Ok(routes)
     }
 
-    /// Request timeout applied to backend calls. Phase 1 ships a fixed sane
-    /// default; making it configurable arrives with circuit breakers (Phase 4),
-    /// where a timeout is a breaker input rather than a plain request setting.
+    /// Request timeout applied to backend calls, from `[breaker].timeout_secs`.
+    /// A timeout is a breaker input: it counts as a transport failure.
     pub fn backend_timeout(&self) -> Duration {
-        Duration::from_secs(30)
+        Duration::from_secs(self.breaker.timeout_secs)
     }
 }
 
@@ -328,6 +393,7 @@ hrm = "http://hrm:3001"
             routes: BTreeMap::from([("crm".to_string(), "tcp://crm:3000".to_string())]),
             auth: AuthConfig::default(),
             ratelimit: RateLimitConfig::default(),
+            breaker: BreakerConfig::default(),
         };
         assert_eq!(
             config.validate().unwrap_err(),
@@ -345,6 +411,7 @@ hrm = "http://hrm:3001"
             routes: BTreeMap::from([("crm".to_string(), "http://".to_string())]),
             auth: AuthConfig::default(),
             ratelimit: RateLimitConfig::default(),
+            breaker: BreakerConfig::default(),
         };
         assert!(matches!(
             config.validate().unwrap_err(),
@@ -359,6 +426,7 @@ hrm = "http://hrm:3001"
             routes: BTreeMap::from([("crm".to_string(), "http://crm:3000/".to_string())]),
             auth: AuthConfig::default(),
             ratelimit: RateLimitConfig::default(),
+            breaker: BreakerConfig::default(),
         };
         let routes = config.validate().expect("valid");
         assert_eq!(routes[0].backend, "http://crm:3000");
@@ -461,6 +529,52 @@ hrm = "http://hrm:3001"
     fn ratelimit_unknown_keys_are_rejected() {
         let err = GatewayConfig::from_toml(
             "[routes]\ncrm = \"http://crm:3000\"\n\n[ratelimit]\nbogus = true\n",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn breaker_defaults_apply_when_section_missing() {
+        let config =
+            GatewayConfig::from_toml("[routes]\ncrm = \"http://crm:3000\"\n").expect("valid");
+        assert_eq!(config.breaker.failure_threshold, 5);
+        assert_eq!(config.breaker.cooldown_secs, 30);
+        assert_eq!(config.breaker.timeout_secs, 15);
+        assert_eq!(config.backend_timeout(), Duration::from_secs(15));
+    }
+
+    #[test]
+    fn breaker_section_overrides_defaults() {
+        let config = GatewayConfig::from_toml(
+            "[routes]\ncrm = \"http://crm:3000\"\n\n[breaker]\nfailure_threshold = 2\ncooldown_secs = 60\ntimeout_secs = 3\n",
+        )
+        .expect("valid");
+        assert_eq!(config.breaker.failure_threshold, 2);
+        assert_eq!(config.breaker.cooldown_secs, 60);
+        assert_eq!(config.backend_timeout(), Duration::from_secs(3));
+    }
+
+    #[test]
+    fn breaker_zero_values_are_rejected() {
+        for (field, toml_line) in [
+            ("failure_threshold", "failure_threshold = 0"),
+            ("cooldown_secs", "cooldown_secs = 0"),
+            ("timeout_secs", "timeout_secs = 0"),
+        ] {
+            let text = format!("[routes]\ncrm = \"http://crm:3000\"\n\n[breaker]\n{toml_line}\n");
+            let err = GatewayConfig::from_toml(&text).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::InvalidBreaker(_)),
+                "{field} = 0 should be InvalidBreaker, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn breaker_unknown_keys_are_rejected() {
+        let err = GatewayConfig::from_toml(
+            "[routes]\ncrm = \"http://crm:3000\"\n\n[breaker]\naggressive = true\n",
         )
         .unwrap_err();
         assert!(matches!(err, ConfigError::Parse(_)));

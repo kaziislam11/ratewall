@@ -17,6 +17,7 @@ use ed25519_dalek::pkcs8::DecodePublicKey;
 use ed25519_dalek::VerifyingKey;
 use ratewall_core::auth;
 use ratewall_core::auth_login::{self, LoginState};
+use ratewall_core::circuit::Breakers;
 use ratewall_core::config::GatewayConfig;
 use ratewall_core::middleware::request_id_and_trace;
 use ratewall_core::middleware_auth::AuthState;
@@ -170,10 +171,25 @@ async fn main() {
     // The bearer gate lives inside the proxy fallback (ProxyState::with_auth)
     // so /healthz and /auth/* are never gated. request-id/trace wraps
     // everything, including auth rejections and the login endpoint.
+    // One breaker per backend: CRM being slow must not degrade HRM.
+    let breakers = Breakers::new(
+        &routes,
+        &ratewall_core::circuit::BreakerConfig {
+            failure_threshold: config.breaker.failure_threshold,
+            cooldown: std::time::Duration::from_secs(config.breaker.cooldown_secs),
+        },
+    );
+    tracing::info!(
+        failure_threshold = config.breaker.failure_threshold,
+        cooldown_secs = config.breaker.cooldown_secs,
+        timeout_secs = config.breaker.timeout_secs,
+        "circuit breakers enabled (one per backend)"
+    );
     let state = ProxyState::new(&routes)
         .expect("failed to build proxy state")
         .with_auth(auth_state)
-        .with_limiter(limiter.expect("limiter built above"));
+        .with_limiter(limiter.expect("limiter built above"))
+        .with_breakers(breakers, config.breaker.timeout_secs);
 
     let mut app = build_router(state);
     if let Some(login) = login_state {

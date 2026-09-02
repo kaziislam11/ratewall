@@ -115,6 +115,20 @@ impl RateLimiter {
             .unwrap_or(0)
     }
 
+    /// True when Redis answers PING. Used by `/readyz`: enforcement is
+    /// fail-open, but readiness must not lie — a gateway whose rate-limit
+    /// counters are unreachable should say so rather than claim healthy.
+    pub async fn ping(&self) -> bool {
+        match self.conn.get().await {
+            Ok(mut conn) => redis::cmd("PING")
+                .query_async::<_, String>(&mut conn)
+                .await
+                .map(|reply| reply == "PONG")
+                .unwrap_or(false),
+            Err(_) => false,
+        }
+    }
+
     fn fail_open(&self, err: impl std::fmt::Display) -> Decision {
         tracing::warn!(%err, "rate limiter fail-open: redis unavailable, request passed uncounted");
         Decision::Open

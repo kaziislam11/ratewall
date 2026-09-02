@@ -5,14 +5,16 @@
 //! engine directly against in-process mock backends.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::Router;
+use axum::{Json, Router};
 
+use crate::circuit::{Admit, Breakers, State as BreakerState};
 use crate::config::Route;
 use crate::ratelimit::{limit_key, Decision, RateLimiter};
 
@@ -28,6 +30,11 @@ pub struct ProxyState {
     /// Optional Phase 3 rate limiter: fixed-window Redis counters,
     /// fail-open. Applied after auth so verified subjects key the limit.
     limiter: Option<RateLimiter>,
+    /// Per-backend circuit breakers (Phase 4). Transport failures open a
+    /// backend's breaker; open breakers fail fast with 503.
+    breakers: Option<Arc<Breakers>>,
+    /// Request timeout for backend calls, from `[breaker].timeout_secs`.
+    backend_timeout: std::time::Duration,
 }
 
 impl ProxyState {
@@ -36,14 +43,16 @@ impl ProxyState {
         for route in routes {
             backends.insert(route.prefix.clone(), route.backend.clone());
         }
-        // Phase 1 keeps a single shared client; per-route timeouts move into
-        // the circuit-breaker wrapper in Phase 4.
+        // Phase 4: the backend timeout is a breaker input — a timed-out
+        // request counts as a transport failure and can open the breaker.
         let client = reqwest::Client::builder().build()?;
         Ok(Self {
             backends,
             client,
             auth: None,
             limiter: None,
+            breakers: None,
+            backend_timeout: std::time::Duration::from_secs(30),
         })
     }
 
@@ -56,6 +65,15 @@ impl ProxyState {
     /// Enable the fail-open rate limiter on proxied routes (Phase 3).
     pub fn with_limiter(mut self, limiter: RateLimiter) -> Self {
         self.limiter = Some(limiter);
+        self
+    }
+
+    /// Enable per-backend circuit breakers (Phase 4) and set the backend
+    /// request timeout. `timeout_secs` comes from the same `[breaker]`
+    /// config: a timed-out call is a transport failure for the breaker.
+    pub fn with_breakers(mut self, breakers: Breakers, timeout_secs: u64) -> Self {
+        self.breakers = Some(Arc::new(breakers));
+        self.backend_timeout = std::time::Duration::from_secs(timeout_secs);
         self
     }
 
@@ -72,6 +90,7 @@ impl ProxyState {
 pub fn build_router(state: ProxyState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
         .fallback(proxy_fallback)
         .with_state(state)
 }
@@ -80,10 +99,43 @@ async fn healthz() -> StatusCode {
     StatusCode::OK
 }
 
+/// Readiness: real component health, not "process is alive". A gateway is
+/// ready when every backend answers (open breakers count as not-ready —
+/// they are open because the backend proved unreachable) and Redis answers
+/// PING (enforcement is fail-open, but readiness must not lie about it).
+/// 200 with per-component details when ready, 503 with the same body when
+/// not — orchestrators key on status, humans read the body.
+async fn readyz(State(state): State<ProxyState>) -> Response {
+    let mut components = BTreeMap::new();
+    let mut ready = true;
+
+    if let Some(breakers) = &state.breakers {
+        for (prefix, breaker_state) in breakers.states() {
+            let ok = breaker_state != BreakerState::Open;
+            ready &= ok;
+            components.insert(format!("backend:{prefix}"), ok);
+        }
+    }
+    if let Some(limiter) = &state.limiter {
+        let ok = limiter.ping().await;
+        ready &= ok;
+        components.insert("redis".to_string(), ok);
+    }
+
+    let status = if ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (status, Json(components)).into_response()
+}
+
 /// Catch-all: parse `/{prefix}[/{rest}]` and proxy to the matching backend.
-/// With Phase 2 auth enabled, verify the bearer token before forwarding.
-/// With Phase 3 rate limiting enabled, count against a fixed window after
-/// auth (so verified subjects key the limit) and before forwarding.
+/// Middleware order on this path: auth (fail-closed) → rate limit
+/// (fail-open) → circuit breaker → forward. Unauthenticated requests exit
+/// at 401 without consuming rate-limit budget; over-limit requests exit at
+/// 429 without touching the backend; an open breaker exits at 503 without
+/// waiting on a dead backend.
 async fn proxy_fallback(State(state): State<ProxyState>, request: Request) -> Response {
     let subject = if let Some(auth) = &state.auth {
         match crate::middleware_auth::check_bearer(auth, &request) {
@@ -126,6 +178,21 @@ async fn forward(state: &ProxyState, prefix: &str, suffix: &str, request: Reques
             .into_response();
     };
 
+    // Circuit breaker, per backend: ShortCircuit fails fast with 503 so a
+    // dead backend costs callers a millisecond, not a connection timeout.
+    let breaker = state.breakers.as_ref().and_then(|b| b.get(prefix));
+    if let Some(breaker) = breaker {
+        if breaker.try_admit() == Admit::ShortCircuit {
+            tracing::warn!(prefix = %prefix, "circuit open: failing fast");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [("retry-after", "5".to_string())],
+                format!("backend {prefix:?} unavailable (circuit open)"),
+            )
+                .into_response();
+        }
+    }
+
     let (parts, body) = request.into_parts();
     let query = parts
         .uri
@@ -147,6 +214,7 @@ async fn forward(state: &ProxyState, prefix: &str, suffix: &str, request: Reques
             out = out.header(name.as_str(), v);
         }
     }
+    out = out.timeout(state.backend_timeout);
 
     let body_bytes = match axum::body::to_bytes(body, 32 * 1024 * 1024).await {
         Ok(bytes) => bytes,
@@ -159,10 +227,13 @@ async fn forward(state: &ProxyState, prefix: &str, suffix: &str, request: Reques
     let started = std::time::Instant::now();
     let response = match out.body(body_bytes).send().await {
         Ok(response) => response,
-        // Phase 1 surfaces backend failures as 502. Circuit breaking and
-        // graceful degradation arrive in Phase 4.
+        // Transport failure: connect refused, DNS, timeout — the "backend is
+        // broken or unreachable" family. This is what trips the breaker.
         Err(err) => {
             tracing::warn!(prefix = %prefix, target = %target, %err, "backend request failed");
+            if let Some(breaker) = breaker {
+                breaker.record(false);
+            }
             return (
                 StatusCode::BAD_GATEWAY,
                 format!("backend {prefix:?} unreachable"),
@@ -170,6 +241,12 @@ async fn forward(state: &ProxyState, prefix: &str, suffix: &str, request: Reques
                 .into_response();
         }
     };
+    // Backend answered over the wire: any HTTP status — including 500 —
+    // means the process is up and serving; only transport failures count
+    // toward opening the breaker.
+    if let Some(breaker) = breaker {
+        breaker.record(true);
+    }
     let latency_ms = started.elapsed().as_millis() as u64;
 
     let status = response.status();

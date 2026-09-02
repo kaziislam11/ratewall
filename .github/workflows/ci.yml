@@ -54,6 +54,9 @@ jobs:
       - name: Chaos test — kill Redis mid-load
         run: bash scripts/chaos-redis.sh
 
+      - name: Chaos test — kill a backend mid-load
+        run: bash scripts/chaos-backend.sh
+
       - name: Debug — gateway logs
         if: failure()
         run: docker compose logs gateway | tail -100

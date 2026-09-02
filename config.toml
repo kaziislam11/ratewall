@@ -1,4 +1,4 @@
-# ratewall gateway configuration (Phase 3)
+# ratewall gateway configuration (Phase 4)
 # Validated at startup — the gateway refuses to start on bad config.
 
 port = 8080
@@ -14,3 +14,13 @@ hrm = "http://hrm:3001"
 redis_url = "redis://redis:6379"
 limit = 100
 window_secs = 60
+
+# Circuit breakers, one per backend: after 5 consecutive transport
+# failures (connect error, timeout, ...) a backend's breaker opens and
+# requests fail fast with 503; after 30s one probe request is let through
+# to check recovery (see docs/adr/0006). timeout_secs also caps every
+# backend request — a timed-out call counts as a transport failure.
+[breaker]
+failure_threshold = 5
+cooldown_secs = 30
+timeout_secs = 15

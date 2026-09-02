@@ -38,6 +38,10 @@ chaos:
 smoke:
     bash scripts/smoke.sh
 
+# Phase 4 chaos: kill a backend, breaker opens, self-heals after recovery
+chaos-backend:
+    bash scripts/chaos-backend.sh
+
 # Install the pre-push hook (fmt + clippy gate) for this clone
 install-hooks:
     git config core.hooksPath scripts/hooks
