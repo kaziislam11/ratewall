@@ -263,10 +263,22 @@ async fn rate_limit_rejections_are_counted() {
         "expected '{expected}' in scrape:
 {body}"
     );
-    // The 429 is a gateway rejection before the proxy path: not in
-    // requests_total (which counts proxied attempts), not a response class.
+    // The 429 is a gateway rejection before the proxy path, so with Redis
+    // it never appears in requests_total (2 proxied attempts, 2 2xx
+    // responses). Fail-open: the over-limit request DID proxy, so 3/3.
+    let (req_expected, class_expected) = if has_redis { (2, 2) } else { (3, 3) };
     assert!(
-        body.contains("ratewall_requests_total{prefix=\"crm\"} 2\n"),
+        body.contains(&format!(
+            "ratewall_requests_total{{prefix=\"crm\"}} {req_expected}
+"
+        )),
+        "{body}"
+    );
+    assert!(
+        body.contains(&format!(
+            "ratewall_responses_total{{prefix=\"crm\",class=\"2xx\"}} {class_expected}
+"
+        )),
         "{body}"
     );
 }
