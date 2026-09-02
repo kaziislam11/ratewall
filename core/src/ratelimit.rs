@@ -15,17 +15,16 @@
 //!   known boundary effect (up to 2× limit across a window edge), which is
 //!   acceptable for abuse protection and is called out in ADR-0005.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
 /// Outcome of a rate-limit check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
-    /// Request is within the limit; `remaining` counts down to the cap.
+    /// Request is within the limit.
     Allow,
-    /// Request exceeds the cap for this window; caller sends 429.
-    Limit(#[allow(dead_code)] u64 /* retry_after_secs */),
+    /// Request exceeds the cap for this window; the payload is the
+    /// `Retry-After` value in seconds and the caller sends 429.
+    Limit(u64),
     /// Redis could not be reached (or errored): the request passes
     /// uncounted. This is the fail-open branch and must never become a
     /// rejection.
@@ -36,6 +35,7 @@ pub enum Decision {
 ///
 /// One instance is shared by the whole gateway. All operations are
 /// fail-open: any Redis error resolves to `Decision::Open`.
+#[derive(Clone)]
 pub struct RateLimiter {
     conn: deadpool_redis::Pool,
     /// Requests allowed per key per window.
@@ -45,8 +45,6 @@ pub struct RateLimiter {
     /// Optional namespace for the Redis keys (used by tests to isolate
     /// windows across runs; production leaves it empty).
     key_prefix: String,
-    /// Count of fail-open decisions, for monitoring.
-    fail_open_count: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for RateLimiter {
@@ -55,18 +53,6 @@ impl std::fmt::Debug for RateLimiter {
             .field("limit", &self.limit)
             .field("window_secs", &self.window.as_secs())
             .finish_non_exhaustive()
-    }
-}
-
-impl Clone for RateLimiter {
-    fn clone(&self) -> Self {
-        Self {
-            conn: self.conn.clone(),
-            limit: self.limit,
-            window: self.window,
-            key_prefix: self.key_prefix.clone(),
-            fail_open_count: Arc::clone(&self.fail_open_count),
-        }
     }
 }
 
@@ -89,7 +75,6 @@ impl RateLimiter {
             limit,
             window,
             key_prefix: key_prefix.unwrap_or("").to_string(),
-            fail_open_count: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -123,11 +108,6 @@ impl RateLimiter {
         }
     }
 
-    /// Requests that were passed uncounted because Redis was unavailable.
-    pub fn fail_open_total(&self) -> u64 {
-        self.fail_open_count.load(Ordering::Relaxed)
-    }
-
     fn window_key_suffix(&self) -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -136,7 +116,6 @@ impl RateLimiter {
     }
 
     fn fail_open(&self, err: impl std::fmt::Display) -> Decision {
-        self.fail_open_count.fetch_add(1, Ordering::Relaxed);
         tracing::warn!(%err, "rate limiter fail-open: redis unavailable, request passed uncounted");
         Decision::Open
     }
@@ -177,6 +156,5 @@ mod tests {
         for _ in 0..25 {
             assert_eq!(limiter.decide("ip:10.0.0.1").await, Decision::Open);
         }
-        assert_eq!(limiter.fail_open_total(), 25);
     }
 }
