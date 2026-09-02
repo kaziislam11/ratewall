@@ -272,6 +272,18 @@ curl -i -H 'x-request-id: my-trace-123' http://localhost:8080/hrm/employees
 
 # Follow it in the logs
 docker compose logs -f gateway
+
+# Check what the gateway actually thinks of its components
+# (breaker state per backend + Redis PING; 503 body names the sick one)
+curl -i http://localhost:8080/readyz
+
+# Chaos: kill Redis mid-load — traffic keeps flowing (fail-open),
+# enforcement resumes when it comes back. Gateway never restarts.
+just chaos
+
+# Chaos: kill the CRM mock — 502s, then fast 503s once the breaker
+# opens, then self-heals when CRM comes back. Gateway never restarts.
+just chaos-backend
 ```
 
 ### Building just the binary
@@ -371,21 +383,26 @@ config.toml         demo configuration, mounted into the gateway container
 
 ## Roadmap
 
+Shipped:
+
+- **Auth** — Ed25519 JWT verification, fail-closed; a demo login
+  endpoint so the stack is usable with zero setup; config hooks to trust
+  an external issuer's public key later.
+- **Rate limiting** — Redis-backed, fail-open, keyed by subject then
+  IP, with the mandatory kill-Redis-under-load test (`just chaos`).
+- **Circuit breakers** — per backend, not global, so a slow CRM
+  doesn't degrade HRM traffic; half-open probes for self-healing;
+  `/readyz` reflecting real backend and Redis health. Kill-a-backend
+  chaos (`just chaos-backend`) runs in CI on every push.
+- **Testing at the edges** — smoke + both chaos scripts asserted on
+  every push in CI, not just on demand.
+
 In rough order, each a self-contained change:
 
-1. **Auth** — Ed25519 JWT verification, fail-closed; a demo login endpoint
-   so the stack is usable with zero setup; config hooks to trust an
-   external issuer's public key later.
-2. **Rate limiting** — Redis-backed, fail-open, keyed by IP then subject,
-   with a mandatory kill-Redis-under-load test.
-3. **Circuit breakers** — per backend, not global, so a slow CRM doesn't
-   degrade HRM traffic; half-open probes for self-healing; `/readyz`
-   reflecting real backend and Redis health.
-4. **Metrics** — Prometheus endpoint: request counts, latency histograms
+1. **Metrics** — Prometheus endpoint: request counts, latency histograms
    per route, rate-limit rejections, breaker state.
-5. **Testing at the edges** — chaos scripts (kill Redis mid-load, kill a
-   backend mid-load) and honest, environment-labeled latency numbers.
-6. **Kubernetes** — kind manifests with readiness probes wired to real
+2. **Load testing** — honest, environment-labeled p99 latency numbers.
+3. **Kubernetes** — kind manifests with readiness probes wired to real
    health, plus a scripted kill-a-pod-under-load demo.
 
 The audit-ledger integration is deliberately absent from this list. The
